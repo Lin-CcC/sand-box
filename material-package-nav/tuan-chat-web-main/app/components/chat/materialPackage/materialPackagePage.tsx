@@ -191,6 +191,7 @@ export default function MaterialPackagePage() {
     <div
       ref={mainRef}
       className="relative w-full h-full"
+      data-role="material-package-main-zone"
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";

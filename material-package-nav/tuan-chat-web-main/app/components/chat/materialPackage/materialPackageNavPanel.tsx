@@ -124,7 +124,7 @@ export default function MaterialPackageNavPanel({
       return null;
     const scrollRect = scrollEl.getBoundingClientRect();
     const itemsRoot = treeItemsRef.current;
-    const items = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row']")) : [];
+    const items = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]")) : [];
     if (!items.length) {
       return index <= 0 ? 88 : Math.max(120, scrollEl.scrollHeight - 24);
     }
@@ -152,22 +152,6 @@ export default function MaterialPackageNavPanel({
     setDockTipTop(Math.max(6, top - 18));
   }, [clearDockHint, computeDockLineTop]);
 
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent).detail as any;
-      if (!detail || detail.visible === false) {
-        clearDockHint();
-        return;
-      }
-      const kind: "top" | "bottom" = detail.kind === "top" ? "top" : "bottom";
-      const index = kind === "top" ? 0 : Number.MAX_SAFE_INTEGER;
-      const text = typeof detail.text === "string" ? detail.text : (kind === "top" ? "插入到顶部" : "插入到底部");
-      applyDockHint({ index, text });
-    };
-    window.addEventListener("tc:material-package:dock-hint", handler as EventListener);
-    return () => window.removeEventListener("tc:material-package:dock-hint", handler as EventListener);
-  }, [applyDockHint, clearDockHint]);
-
   const openPreview = useCallback((payload: MaterialPreviewPayload, hintPosition?: { x: number; y: number } | null) => {
     onOpenPreview(payload, hintPosition ?? null);
   }, [onOpenPreview]);
@@ -193,6 +177,7 @@ export default function MaterialPackageNavPanel({
       kind: "package";
       key: string;
       depth: number;
+      baseIndex: number;
       isCollapsed: boolean;
       nodeCount: number;
       label: string;
@@ -202,6 +187,7 @@ export default function MaterialPackageNavPanel({
       kind: "folder";
       key: string;
       depth: number;
+      baseIndex: number;
       isCollapsed: boolean;
       name: string;
       payload: MaterialPreviewPayload;
@@ -210,6 +196,7 @@ export default function MaterialPackageNavPanel({
       kind: "material";
       key: string;
       depth: number;
+      baseIndex: number;
       name: string;
       payload: MaterialPreviewPayload;
     }
@@ -238,6 +225,7 @@ export default function MaterialPackageNavPanel({
           kind: "folder",
           key,
           depth: indent,
+          baseIndex: items.length,
           isCollapsed,
           name: node.name,
           payload,
@@ -262,6 +250,7 @@ export default function MaterialPackageNavPanel({
         kind: "material",
         key,
         depth: indent,
+        baseIndex: items.length,
         name: node.name,
         payload,
       });
@@ -284,6 +273,7 @@ export default function MaterialPackageNavPanel({
         kind: "package",
         key: rootKey,
         depth: 0,
+        baseIndex: items.length,
         isCollapsed,
         nodeCount: rootNodes.length,
         label,
@@ -307,6 +297,44 @@ export default function MaterialPackageNavPanel({
   const baseItemCount = baseVisibleItems.length;
   const resolvedDockIndex = useMemo(() => clampInt(dockedIndex, 0, baseItemCount), [baseItemCount, dockedIndex]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      if (!detail || detail.visible === false) {
+        clearDockHint();
+        return;
+      }
+      if (typeof detail.index === "number" && Number.isFinite(detail.index)) {
+        const index = clampInt(Math.floor(detail.index), 0, baseItemCount);
+        const text = typeof detail.text === "string" ? detail.text : "插入到这里";
+        applyDockHint({ index, text });
+        return;
+      }
+
+      const kind: "top" | "bottom" = detail.kind === "top" ? "top" : "bottom";
+      const index = kind === "top" ? 0 : baseItemCount;
+      const text = typeof detail.text === "string" ? detail.text : (kind === "top" ? "插入到顶部" : "插入到底部");
+      applyDockHint({ index, text });
+    };
+    window.addEventListener("tc:material-package:dock-hint", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-hint", handler as EventListener);
+  }, [applyDockHint, baseItemCount, clearDockHint]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      const index = typeof detail?.index === "number" && Number.isFinite(detail.index)
+        ? clampInt(Math.floor(detail.index), 0, baseItemCount)
+        : null;
+      if (index == null) {
+        return;
+      }
+      onMoveDockedPreview(index);
+    };
+    window.addEventListener("tc:material-package:dock-move", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-move", handler as EventListener);
+  }, [baseItemCount, onMoveDockedPreview]);
+
   const visibleItems = useMemo(() => {
     if (!dockedPreview) {
       return baseVisibleItems;
@@ -326,7 +354,7 @@ export default function MaterialPackageNavPanel({
     if (!root) {
       return baseItemCount;
     }
-    const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row']"));
+    const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]"));
     if (!rows.length) {
       return 0;
     }
@@ -341,59 +369,23 @@ export default function MaterialPackageNavPanel({
     return baseItemCount;
   }, [baseItemCount]);
 
-  const renderVisibleItem = useCallback((item: VisibleItem, renderIndex: number) => {
-    const baseIndex = (() => {
-      if (!dockedPreview) {
-        return renderIndex;
-      }
-      if (item.kind === "dockPreview") {
-        return resolvedDockIndex;
-      }
-      return renderIndex > resolvedDockIndex ? renderIndex - 1 : renderIndex;
-    })();
-
+  const renderVisibleItem = useCallback((item: VisibleItem, _renderIndex: number) => {
     if (item.kind === "dockPreview") {
       return (
         <div
           key={item.key}
           className="px-1 rounded-md"
           data-role="material-package-visible-row"
-          data-base-index={baseIndex}
+          data-dock-preview="1"
         >
           <div className="rounded-lg border border-base-300 bg-base-200/40 overflow-hidden">
-            <div className="flex items-center justify-between gap-2 px-2 py-1 bg-base-100/60 text-[11px] text-base-content/70">
-              <div className="flex items-center gap-2 min-w-0">
-                <div
-                  className="px-2 py-1 rounded-md border border-base-300 bg-base-100/80 cursor-grab active:cursor-grabbing select-none"
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.effectAllowed = "move";
-                    setMaterialPreviewDragData(e.dataTransfer, item.payload);
-                    setMaterialPreviewDragOrigin(e.dataTransfer, "docked");
-                  }}
-                  title="拖拽以调整位置，或拖出到右侧主区域"
-                >
-                  拖拽移动
-                </div>
-                <div className="truncate">已嵌入预览：{item.payload.label}</div>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs"
-                onClick={() => {
-                  onUndockPreview();
-                  onOpenPreview(item.payload, null);
-                }}
-              >
-                弹出
-              </button>
-            </div>
             <div className="h-[360px]">
               <MaterialPreviewFloat
                 variant="embedded"
                 payload={item.payload}
                 onClose={onUndockPreview}
                 onDock={onDockPreview}
+                dragOrigin="docked"
                 onPopout={(payload) => {
                   onUndockPreview();
                   onOpenPreview(payload, null);
@@ -412,7 +404,7 @@ export default function MaterialPackageNavPanel({
           key={item.key}
           className="px-1 rounded-md"
           data-role="material-package-visible-row"
-          data-base-index={baseIndex}
+          data-base-index={item.baseIndex}
         >
           <div
             className="flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md hover:bg-base-300/40"
@@ -457,7 +449,7 @@ export default function MaterialPackageNavPanel({
           key={item.key}
           className="px-1 rounded-md"
           data-role="material-package-visible-row"
-          data-base-index={baseIndex}
+          data-base-index={item.baseIndex}
         >
           <div
             className="flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md hover:bg-base-300/40"
@@ -498,7 +490,7 @@ export default function MaterialPackageNavPanel({
         className="flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md hover:bg-base-300/40"
         style={{ paddingLeft: `${item.depth + 18}px` }}
         data-role="material-package-visible-row"
-        data-base-index={baseIndex}
+        data-base-index={item.baseIndex}
         draggable
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = "copy";
@@ -599,7 +591,7 @@ export default function MaterialPackageNavPanel({
               TUAN-CHAT
             </div>
 
-            <div ref={treeItemsRef}>
+            <div ref={treeItemsRef} data-role="material-package-tree-items">
             {packagesQuery.isLoading && (
               <div className="px-2 py-2 text-xs opacity-70 flex items-center gap-2">
                 <span className="loading loading-spinner loading-xs"></span>

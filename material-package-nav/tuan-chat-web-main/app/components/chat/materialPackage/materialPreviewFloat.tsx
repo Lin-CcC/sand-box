@@ -34,6 +34,8 @@ import {
   updateMaterialPackage,
 } from "@/components/materialPackage/materialPackageApi";
 import { readMockPackages, writeMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
+import type { MaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
+import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
 import {
@@ -54,8 +56,9 @@ interface MaterialPreviewFloatProps {
   variant?: "float" | "embedded";
   payload: MaterialPreviewPayload;
   onClose: () => void;
-  onDock: (payload: MaterialPreviewPayload, options?: { placement?: "top" | "bottom" }) => void;
+  onDock: (payload: MaterialPreviewPayload, options?: { index?: number; placement?: "top" | "bottom" }) => void;
   onPopout?: (payload: MaterialPreviewPayload) => void;
+  dragOrigin?: MaterialPreviewDragOrigin;
   initialPosition?: { x: number; y: number } | null;
 }
 
@@ -71,9 +74,11 @@ export default function MaterialPreviewFloat({
   onClose,
   onDock,
   onPopout,
+  dragOrigin,
   initialPosition,
 }: MaterialPreviewFloatProps) {
   const isEmbedded = variant === "embedded";
+  const isDockedEmbedded = isEmbedded && dragOrigin === "docked";
   const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ active: boolean; offsetX: number; offsetY: number }>({ active: false, offsetX: 0, offsetY: 0 });
@@ -112,15 +117,6 @@ export default function MaterialPreviewFloat({
   });
   const [shellSize, setShellSize] = useState(() => ({ w: 860, h: isEmbedded ? 360 : 420 }));
   const [isCoverMode, setIsCoverMode] = useState<boolean>(() => !isEmbedded && initialPosition == null);
-  const debugEnabled = useMemo(() => {
-    try {
-      return window.localStorage.getItem("tc:material-package:debug-preview-float") === "1";
-    }
-    catch {
-      return false;
-    }
-  }, []);
-  const debugEventRef = useRef<string>("");
 
   const setCoverMode = useCallback((next: boolean) => {
     isCoverModeRef.current = next;
@@ -211,6 +207,105 @@ export default function MaterialPreviewFloat({
 
   const title = useMemo(() => payload.label, [payload.label]);
 
+  const computeDockInsertIndex = useCallback((clientY: number) => {
+    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+    if (!itemsRoot) {
+      return 0;
+    }
+    const rows = Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]"));
+    if (!rows.length) {
+      return 0;
+    }
+    const baseCount = rows.length;
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        const idx = Number(row.dataset.baseIndex ?? 0);
+        if (!Number.isFinite(idx))
+          return 0;
+        return clamp(Math.floor(idx), 0, baseCount);
+      }
+    }
+    const last = rows[rows.length - 1]!;
+    const lastIdx = Number(last.dataset.baseIndex ?? baseCount);
+    const finalCount = Number.isFinite(lastIdx) ? lastIdx + 1 : baseCount;
+    return clamp(finalCount, 0, finalCount);
+  }, []);
+
+  const dispatchDockHintByIndex = useCallback((clientY: number) => {
+    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+    const rows = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]")) : [];
+    const baseCount = rows.length;
+    const index = computeDockInsertIndex(clientY);
+    const baseText = index <= 0 ? "插入到顶部" : index >= baseCount ? "插入到底部" : "插入到这里";
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）` } }));
+  }, [computeDockInsertIndex]);
+
+  const clearDockHintByIndex = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
+  }, []);
+
+  const dockPointerDragRef = useRef<{ active: boolean; pointerId: number | null }>({ active: false, pointerId: null });
+  const onDockedHandlePointerDown = useCallback((event: React.PointerEvent) => {
+    if (!isDockedEmbedded) {
+      return;
+    }
+    dockPointerDragRef.current.active = true;
+    dockPointerDragRef.current.pointerId = event.pointerId;
+    event.preventDefault();
+    try {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    }
+    catch {
+      // ignore
+    }
+    dispatchDockHintByIndex(event.clientY);
+  }, [dispatchDockHintByIndex, isDockedEmbedded]);
+
+  const onDockedHandlePointerMove = useCallback((event: React.PointerEvent) => {
+    if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
+      return;
+    }
+    dispatchDockHintByIndex(event.clientY);
+  }, [dispatchDockHintByIndex]);
+
+  const onDockedHandlePointerUp = useCallback((event: React.PointerEvent) => {
+    if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
+      return;
+    }
+    dockPointerDragRef.current.active = false;
+    dockPointerDragRef.current.pointerId = null;
+    try {
+      (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+    }
+    catch {
+      // ignore
+    }
+
+    const dockZone = document.querySelector("[data-role='material-package-dock-zone']") as HTMLElement | null;
+    const mainZone = document.querySelector("[data-role='material-package-main-zone']") as HTMLElement | null;
+    const inRect = (zone: HTMLElement | null) => {
+      if (!zone) {
+        return false;
+      }
+      const rect = zone.getBoundingClientRect();
+      return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    };
+
+    if (inRect(dockZone)) {
+      const index = computeDockInsertIndex(event.clientY);
+      window.dispatchEvent(new CustomEvent("tc:material-package:dock-move", { detail: { index } }));
+      clearDockHintByIndex();
+      return;
+    }
+
+    clearDockHintByIndex();
+    if (inRect(mainZone)) {
+      onPopout?.(payload);
+    }
+  }, [clearDockHintByIndex, computeDockInsertIndex, onPopout, payload]);
+
   const initialState = useMemo(() => resolveInitialPreviewState(payload), [payload]);
   const [folderPath, setFolderPath] = useState<string[]>(() => initialState.folderPath);
   const [selectedItem, setSelectedItem] = useState<SelectedItem>(() => {
@@ -246,10 +341,14 @@ export default function MaterialPreviewFloat({
       window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
       return;
     }
-    const kind = args.clientY <= rect.top + rect.height / 2 ? "top" : "bottom";
-    const text = kind === "top" ? "插入到顶部" : "插入到底部";
-    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: true, kind, text } }));
-  }, []);
+
+    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+    const rows = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]")) : [];
+    const baseCount = rows.length;
+    const index = computeDockInsertIndex(args.clientY);
+    const baseText = index <= 0 ? "插入到顶部" : index >= baseCount ? "插入到底部" : "插入到这里";
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）` } }));
+  }, [computeDockInsertIndex]);
 
   useEffect(() => {
     setFolderPath(initialState.folderPath);
@@ -799,8 +898,8 @@ export default function MaterialPreviewFloat({
         const rect = zone.getBoundingClientRect();
         const isInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
         if (isInside) {
-          const placement = event.clientY <= rect.top + rect.height / 2 ? "top" : "bottom";
-          onDock(buildDockPayload(), { placement });
+          const index = computeDockInsertIndex(event.clientY);
+          onDock(buildDockPayload(), { index });
         }
       }
       window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
@@ -813,7 +912,7 @@ export default function MaterialPreviewFloat({
     }
     pointerRef.current.pointerId = null;
     pointerRef.current.mode = "none";
-  }, [buildDockPayload, onDock]);
+  }, [buildDockPayload, computeDockInsertIndex, onDock]);
 
   return (
     <div
@@ -833,35 +932,42 @@ export default function MaterialPreviewFloat({
     >
       {/* Tabs bar (prototype: tabs) */}
       <div
-        className={`h-[34px] flex items-stretch border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] select-none ${isEmbedded ? "" : "touch-none"}`}
-        onPointerDown={isEmbedded ? undefined : onHeaderPointerDown}
+        className={`h-[34px] flex items-stretch border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] select-none ${(!isEmbedded || isDockedEmbedded) ? "touch-none" : ""}`}
+        onPointerDownCapture={(e) => {
+          const target = e.target as HTMLElement | null;
+          if (!target)
+            return;
+          if (target.closest("[data-mpf-no-drag]"))
+            return;
+          if (target.closest("button,[role='button'],a,input,select,textarea"))
+            return;
+          if (isDockedEmbedded) {
+            onDockedHandlePointerDown(e);
+            return;
+          }
+          if (!isEmbedded) {
+            onHeaderPointerDown(e);
+          }
+        }}
+        onPointerMoveCapture={isDockedEmbedded ? onDockedHandlePointerMove : undefined}
+        onPointerUpCapture={isDockedEmbedded ? onDockedHandlePointerUp : undefined}
+        onPointerCancelCapture={isDockedEmbedded ? onDockedHandlePointerUp : undefined}
         role="presentation"
       >
-        <div className="grid place-items-center px-3 text-[13px] text-[color:var(--tc-mpf-icon)] border-r border-[color:var(--tc-mpf-border)] cursor-move">
-          项目：无标题
-        </div>
         <div
-          className="flex items-center gap-2 px-3 flex-1 min-w-0 text-[13px] font-normal text-[color:var(--tc-mpf-text)] bg-[color:var(--tc-mpf-surface)] cursor-move"
-          title="拖动窗口"
+          className="flex items-stretch flex-1 min-w-0"
+          title={isDockedEmbedded ? "按住任意空白处拖拽：目录内可任意插入，拖到右侧可脱离目录" : "拖动窗口"}
         >
-          <PackageIcon className="size-4 opacity-80" weight="bold" />
-          <button
-            type="button"
-            className="truncate text-left hover:underline"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setFolderPath([]);
-              setSelectedItem(null);
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-            title="回到根目录"
+          <div
+            className="flex items-center gap-2 px-3 flex-1 min-w-0 text-[13px] font-normal text-[color:var(--tc-mpf-text)] bg-[color:var(--tc-mpf-surface)] cursor-move"
           >
-            素材箱：{materialPackage?.name ?? `素材包#${selectedPackageId}`}
-          </button>
+            <PackageIcon className="size-4 opacity-80" weight="bold" />
+            <span className="truncate text-left">
+              {materialPackage?.name ?? `素材包#${selectedPackageId}`}
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-2 pr-2 bg-[color:var(--tc-mpf-surface)]">
+        <div className="flex items-center gap-2 pr-2 bg-[color:var(--tc-mpf-surface)]" data-mpf-no-drag="1">
           <button
             type="button"
             className={iconControlClass}
@@ -955,18 +1061,6 @@ export default function MaterialPreviewFloat({
             title="返回上一级"
           >
             <ChevronDown className="-rotate-90 size-4 opacity-80" />
-          </button>
-          <button
-            type="button"
-            className="h-5 px-2 inline-flex items-center justify-center rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-surface-2)] text-[color:var(--tc-mpf-text)] hover:bg-[color:var(--tc-mpf-surface-3)] active:opacity-90 transition"
-            onClick={() => {
-              setFolderPath([]);
-              setSelectedItem(null);
-            }}
-            aria-label="回到根目录"
-            title="回到根目录"
-          >
-            根目录
           </button>
           <div className="min-w-0 truncate" title={pathText}>
             {pathText}
