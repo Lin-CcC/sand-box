@@ -247,6 +247,10 @@ export default function MaterialPreviewFloat({
     window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
   }, []);
 
+  const dispatchMainDropPreview = useCallback((visible: boolean) => {
+    window.dispatchEvent(new CustomEvent("tc:material-package:main-drop-preview", { detail: { visible } }));
+  }, []);
+
   const dockPointerDragRef = useRef<{ active: boolean; pointerId: number | null }>({ active: false, pointerId: null });
   const onDockedHandlePointerDown = useCallback((event: React.PointerEvent) => {
     if (!isDockedEmbedded) {
@@ -254,6 +258,7 @@ export default function MaterialPreviewFloat({
     }
     dockPointerDragRef.current.active = true;
     dockPointerDragRef.current.pointerId = event.pointerId;
+    dispatchMainDropPreview(false);
     event.preventDefault();
     try {
       (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -268,8 +273,26 @@ export default function MaterialPreviewFloat({
     if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
       return;
     }
-    dispatchDockHintByIndex(event.clientY);
-  }, [dispatchDockHintByIndex]);
+
+    const dockZone = document.querySelector("[data-role='material-package-dock-zone']") as HTMLElement | null;
+    const mainZone = document.querySelector("[data-role='material-package-main-zone']") as HTMLElement | null;
+    const inRect = (zone: HTMLElement | null) => {
+      if (!zone) {
+        return false;
+      }
+      const rect = zone.getBoundingClientRect();
+      return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+    };
+
+    if (inRect(dockZone)) {
+      dispatchMainDropPreview(false);
+      dispatchDockHintByIndex(event.clientY);
+      return;
+    }
+
+    clearDockHintByIndex();
+    dispatchMainDropPreview(inRect(mainZone));
+  }, [clearDockHintByIndex, dispatchDockHintByIndex, dispatchMainDropPreview]);
 
   const onDockedHandlePointerUp = useCallback((event: React.PointerEvent) => {
     if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
@@ -298,14 +321,16 @@ export default function MaterialPreviewFloat({
       const index = computeDockInsertIndex(event.clientY);
       window.dispatchEvent(new CustomEvent("tc:material-package:dock-move", { detail: { index } }));
       clearDockHintByIndex();
+      dispatchMainDropPreview(false);
       return;
     }
 
     clearDockHintByIndex();
+    dispatchMainDropPreview(false);
     if (inRect(mainZone)) {
       onPopout?.(payload);
     }
-  }, [clearDockHintByIndex, computeDockInsertIndex, onPopout, payload]);
+  }, [clearDockHintByIndex, computeDockInsertIndex, dispatchMainDropPreview, onPopout, payload]);
 
   const initialState = useMemo(() => resolveInitialPreviewState(payload), [payload]);
   const [folderPath, setFolderPath] = useState<string[]>(() => initialState.folderPath);

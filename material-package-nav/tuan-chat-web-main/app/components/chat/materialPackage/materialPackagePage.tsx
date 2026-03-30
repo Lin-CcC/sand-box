@@ -1,5 +1,5 @@
 import { useGetUserActiveSpacesQuery } from "api/hooks/chatQueryHooks";
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import ChatPageLayout from "@/components/chat/chatPageLayout";
@@ -134,6 +134,16 @@ export default function MaterialPackagePage() {
   const [dockedPreview, setDockedPreview] = useState<ReturnType<typeof getMaterialPreviewDragData>>(null);
   const [dockedIndex, setDockedIndex] = useState<number>(0);
   const [previewHintPos, setPreviewHintPos] = useState<{ x: number; y: number } | null>(null);
+  const [showMainDropPreview, setShowMainDropPreview] = useState(false);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      setShowMainDropPreview(Boolean(detail?.visible));
+    };
+    window.addEventListener("tc:material-package:main-drop-preview", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:main-drop-preview", handler as EventListener);
+  }, []);
 
   const openPreview = useCallback((payload: ReturnType<typeof getMaterialPreviewDragData>, hintPosition?: { x: number; y: number } | null) => {
     if (!payload)
@@ -168,6 +178,7 @@ export default function MaterialPackagePage() {
   const handleDropToMain = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    setShowMainDropPreview(false);
     const payload = getMaterialPreviewDragData(event.dataTransfer);
     if (!payload)
       return;
@@ -209,6 +220,10 @@ export default function MaterialPackagePage() {
           onDock={dockPreview}
           initialPosition={previewHintPos}
         />
+      )}
+
+      {showMainDropPreview && (
+        <div className="pointer-events-none absolute inset-0 z-[80] rounded-md border border-info/30 bg-info/5 shadow-[0_0_0_1px_rgba(255,255,255,0.06)_inset] backdrop-blur-[1px]" />
       )}
     </div>
   );
