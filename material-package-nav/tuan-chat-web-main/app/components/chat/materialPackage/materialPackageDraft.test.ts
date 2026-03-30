@@ -9,6 +9,7 @@ import {
   draftDeleteMaterial,
   draftRenameFolder,
   draftRenameMaterial,
+  draftReplaceMaterialMessages,
 } from "@/components/chat/materialPackage/materialPackageDraft";
 
 describe("materialPackageDraft", () => {
@@ -78,6 +79,29 @@ describe("materialPackageDraft", () => {
 
     const deletedFolder = draftDeleteFolder(deletedMaterial, [], "场景");
     expect(deletedFolder.root).toHaveLength(0);
+  });
+
+  it("覆盖导入时仅替换 messages，保留顺序与 note", () => {
+    const base: MaterialPackageContent = {
+      version: 1,
+      root: [
+        {
+          type: "folder",
+          name: "场景",
+          children: [
+            { type: "material", name: "a.png", note: "旧备注", messages: [{ messageType: 2, extra: { imageMessage: { url: "old" } } }] },
+            { type: "material", name: "b.png", note: "", messages: [{ messageType: 2, extra: { imageMessage: { url: "b" } } }] },
+          ],
+        },
+      ],
+    };
+
+    const next = draftReplaceMaterialMessages(base, ["场景"], "a.png", [{ messageType: 2, extra: { imageMessage: { url: "new" } } }]);
+    const folder = next.root[0] as any;
+    expect(folder.children).toHaveLength(2);
+    expect(folder.children[0]).toMatchObject({ type: "material", name: "a.png", note: "旧备注" });
+    expect(folder.children[0].messages?.[0]?.extra?.imageMessage?.url).toBe("new");
+    expect(folder.children[1]).toMatchObject({ type: "material", name: "b.png" });
   });
 });
 

@@ -192,6 +192,35 @@ export function draftUpdateMaterialAnnotations(
   return updateContentAtPath(content, folderPath, nodes => updateMaterialAnnotationsByName(nodes, name, nextAnnotations, applyToAll));
 }
 
+export function draftReplaceMaterialMessages(
+  content: MaterialPackageContent,
+  folderPath: string[],
+  materialName: string,
+  nextMessages: any[],
+): MaterialPackageContent {
+  const name = materialName.trim();
+  if (!name)
+    return content;
+  const normalized = Array.isArray(nextMessages) ? nextMessages : [];
+
+  let changed = false;
+  const next = updateContentAtPath(content, folderPath, (nodes) => {
+    let localChanged = false;
+    const nextNodes = nodes.map((n) => {
+      if (n.type !== "material" || n.name !== name)
+        return n;
+      localChanged = true;
+      return { ...n, messages: normalized } as MaterialNode;
+    });
+    if (localChanged) {
+      changed = true;
+    }
+    return localChanged ? nextNodes : nodes;
+  });
+
+  return changed ? next : content;
+}
+
 export function buildEmptyMaterialPackageContent(): MaterialPackageContent {
   return {
     version: 1,

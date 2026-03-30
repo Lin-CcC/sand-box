@@ -105,6 +105,34 @@ function getMaterialThumbUrl(node: MaterialNode): string | null {
   return null;
 }
 
+function getMaterialUnuploadedHint(node: MaterialNode): string | null {
+  if (node.type !== "material")
+    return null;
+
+  for (const msg of node.messages ?? []) {
+    if (!msg || typeof msg !== "object")
+      continue;
+
+    if (msg.messageType === 2) {
+      const extra: any = (msg as any).extra ?? null;
+      const imageMessage = extra?.imageMessage ?? extra;
+      const url = typeof imageMessage?.url === "string" ? imageMessage.url : "";
+      if (!url)
+        return "图片未上传（后端模式）";
+    }
+
+    if (msg.messageType === 3) {
+      const extra: any = (msg as any).extra ?? null;
+      const soundMessage = extra?.soundMessage ?? extra;
+      const url = typeof soundMessage?.url === "string" ? soundMessage.url : "";
+      if (!url)
+        return "音频未上传（后端模式）";
+    }
+  }
+
+  return null;
+}
+
 function getMaterialAnnotations(node: MaterialNode): string[] {
   if (node.type !== "material")
     return [];
@@ -1549,6 +1577,7 @@ export default function MaterialPreviewFloat({
                 const subtitle = isFolder ? `文件夹 · ${(node.children?.length ?? 0)}项` : hintText;
                 const key = `${node.type}:${name}`;
                 const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
+                const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                 const annotations = isFolder ? [] : getMaterialAnnotations(node);
                 const displayChips = annotations.slice(0, 3);
                 const moreCount = Math.max(0, annotations.length - displayChips.length);
@@ -1598,6 +1627,14 @@ export default function MaterialPreviewFloat({
                       )}
                       {isFolder && <FolderIcon className="size-10 opacity-70" />}
                       {!isFolder && !thumbUrl && <FileImageIcon className="size-10 opacity-70" />}
+                      {!isFolder && !thumbUrl && unuploadedHint && (
+                        <div
+                          className="absolute bottom-1 left-1 right-1 text-center text-[10px] px-1 py-0.5 rounded border border-[color:var(--tc-mpf-item-border)] bg-[color:var(--tc-mpf-surface-2)] text-[color:var(--tc-mpf-text)]/80 backdrop-blur-sm truncate"
+                          title={unuploadedHint}
+                        >
+                          {unuploadedHint}
+                        </div>
+                      )}
                     </div>
                     <div className="p-2">
                       {inlineEdit && inlineEdit.field === "name" && inlineEdit.type === node.type && inlineEdit.name === name
@@ -1775,6 +1812,7 @@ export default function MaterialPreviewFloat({
                   const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
                   const key = `${node.type}:${name}`;
                   const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
+                  const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                   const annotations = isFolder ? [] : getMaterialAnnotations(node);
                   const displayChips = annotations.slice(0, 3);
                   const moreCount = Math.max(0, annotations.length - displayChips.length);
@@ -1825,6 +1863,14 @@ export default function MaterialPreviewFloat({
                             {!thumbUrl && !isFolder && (
                               <div className="w-full h-full grid place-items-center bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)]">
                                 <FileImageIcon className="size-7 opacity-70" />
+                              </div>
+                            )}
+                            {!thumbUrl && !isFolder && unuploadedHint && (
+                              <div
+                                className="absolute bottom-1 left-1 right-1 text-center text-[10px] px-1 py-0.5 rounded border border-[color:var(--tc-mpf-item-border)] bg-[color:var(--tc-mpf-surface-2)] text-[color:var(--tc-mpf-text)]/80 backdrop-blur-sm truncate"
+                                title={unuploadedHint}
+                              >
+                                {unuploadedHint}
                               </div>
                             )}
                           </div>
