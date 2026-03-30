@@ -91,7 +91,7 @@ Note: case-sensitivity follows exact string match for now (e.g. `A.png` and `a.p
 When importing into a folder, if any incoming file name collides with existing `material.name`:
 
 - Show a dialog listing conflicts and ask user:
-  - **Overwrite**: replace the existing target material’s content with the imported content.
+  - **Overwrite**: keep the existing node **position and name**, replace its `messages` with the imported mapping; preserve `note`.
   - **Auto Rename**: create/import with renamed file names (append ` (1)`, ` (2)` etc, matching VSCode pattern).
   - **Cancel**
 
@@ -115,6 +115,7 @@ Implementation should reuse the current “import” mapping used by the preview
 URL behavior:
 - In **mock/local** mode: `url = URL.createObjectURL(file)` (works for preview but is not durable across reloads).
 - In **backend** mode (until upload API exists): set `url = ""` and still create the node; later we can upgrade to real upload + url.
+  - Expected UI when `url == ""`: show a placeholder thumbnail/icon and a hint like “未上传（后端模式）”；do not crash or show broken media UI.
 
 ### Import collisions within the same batch
 
@@ -137,7 +138,26 @@ Given a selected item in the tree:
 If there is no selection:
 
 - If there is a remembered “default target package”, reveal that package row.
-- Otherwise no-op (or show subtle hint).
+- Otherwise: no-op and show a subtle toast/hint: “请先选择一个素材箱或目录”。
+
+## Choose Package dialog (when multiple packages and no selection)
+
+- UI: simple modal dialog titled “选择素材箱”。
+- List: package name (required), optional secondary info (e.g. item count) is non-blocking.
+- Actions: click a package row to select, then “确定 / 取消”.
+- Cancel behavior: abort the current toolbar action (no changes).
+- Remembering: the chosen package becomes the “default target package” for subsequent actions until reload.
+
+## Auto-rename algorithm (VSCode-like)
+
+For both New* and Import Auto Rename, use the same helper:
+
+- Suffix format: ` (n)` where `n` starts at 1.
+- If the name has an extension (a `.` that is not the first character), insert suffix **before the last extension**:
+  - `foo.txt` → `foo (1).txt`
+  - `archive.tar.gz` → `archive.tar (1).gz`
+- If no extension: append suffix at end:
+  - `foo` → `foo (1)`
 
 ## State/Model additions needed in `MaterialPackageNavPanel`
 
