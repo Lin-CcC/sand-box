@@ -7,6 +7,7 @@ import type {
 import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
 
 import { ChevronDown, FolderIcon, XMarkICon } from "@/icons";
+import BetterImg from "@/components/common/betterImg";
 import {
   ArrowLineDownIcon,
   ArrowLineUpIcon,
@@ -17,6 +18,7 @@ import {
   PackageIcon,
   PencilSimpleIcon,
   PlusIcon,
+  TagIcon,
   SquareIcon,
   SquaresFourIcon,
   TrashIcon,
@@ -24,7 +26,7 @@ import {
 } from "@phosphor-icons/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 
 import {
   createMaterialPackage,
@@ -51,7 +53,9 @@ import {
   draftDeleteMaterial,
   draftRenameFolder,
   draftRenameMaterial,
+  draftUpdateMaterialAnnotations,
 } from "@/components/chat/materialPackage/materialPackageDraft";
+import { useMpfThemeVars } from "@/components/chat/materialPackage/mpfThemeVars";
 
 interface MaterialPreviewFloatProps {
   variant?: "float" | "embedded";
@@ -68,6 +72,85 @@ type SelectedItem = { type: "folder" | "material"; name: string } | null;
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
+
+function getMaterialThumbUrl(node: MaterialNode): string | null {
+  if (node.type !== "material")
+    return null;
+
+  for (const msg of node.messages ?? []) {
+    if (!msg || typeof msg !== "object")
+      continue;
+    if (msg.messageType !== 2)
+      continue;
+    const extra: any = (msg as any).extra ?? null;
+    const imageMessage = extra?.imageMessage ?? extra;
+    const url = typeof imageMessage?.url === "string" ? imageMessage.url : "";
+    if (url)
+      return url;
+  }
+
+  return null;
+}
+
+function getMaterialAnnotations(node: MaterialNode): string[] {
+  if (node.type !== "material")
+    return [];
+
+  const raw: string[] = [];
+  for (const msg of node.messages ?? []) {
+    const list = (msg as any)?.annotations;
+    if (!Array.isArray(list))
+      continue;
+    for (const item of list) {
+      if (typeof item === "string" && item.trim())
+        raw.push(item.trim());
+    }
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of raw) {
+    if (item === "素材")
+      continue;
+    if (seen.has(item))
+      continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
+function getNodeBaseType(node: MaterialNode): "文件夹" | "图片" | "音频" | "视频" | "文本" | "文件" {
+  if (node.type === "folder")
+    return "文件夹";
+
+  for (const msg of node.messages ?? []) {
+    const mt = (msg as any)?.messageType;
+    if (mt === 2)
+      return "图片";
+    if (mt === 14)
+      return "视频";
+    if (mt === 3)
+      return "音频";
+  }
+
+  const first = (node.messages ?? [])[0] as any;
+  const content = typeof first?.content === "string" ? first.content : "";
+  if (content.trim())
+    return "文本";
+  return "文件";
+}
+
+const COMMON_ANNOTATIONS = [
+  "背景",
+  "BGM",
+  "立绘",
+  "音效",
+  "展示",
+  "旁白",
+  "环境",
+  "文本",
+] as const;
 
 export default function MaterialPreviewFloat({
   variant = "float",
@@ -342,6 +425,13 @@ export default function MaterialPreviewFloat({
   const [keyword, setKeyword] = useState("");
   const [viewMode, setViewMode] = useState<"icon" | "list">("icon");
   const [thumbSize, setThumbSize] = useState(136);
+  const listThumbBox = useMemo(() => {
+    // Keep this in sync with the range slider: make list preview react to thumbSize as well.
+    // Use a common image aspect ratio (16:9) for thumbnails.
+    const w = clamp(Math.round(thumbSize * 1.05), 128, 192);
+    const h = clamp(Math.round(w * 9 / 16), 72, 120);
+    return { w, h };
+  }, [thumbSize]);
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
   const [selectedPackageId, setSelectedPackageId] = useState<number>(() => payload.packageId);
@@ -501,6 +591,112 @@ export default function MaterialPreviewFloat({
 
   const compactList = useMemo(() => viewMode === "list" && shellSize.w <= 360, [shellSize.w, viewMode]);
 
+  const selectedNode = useMemo(() => {
+    if (!selectedItem)
+      return null;
+    const found = sortedNodes.find(n => n.type === selectedItem.type && n.name === selectedItem.name) ?? null;
+    return found;
+  }, [selectedItem, sortedNodes]);
+
+  const annoAnchorRef = useRef<HTMLElement | null>(null);
+  const annoTipRef = useRef<HTMLDivElement | null>(null);
+  const [annoOpen, setAnnoOpen] = useState(false);
+  const [annoPos, setAnnoPos] = useState<{ left: number; top: number } | null>(null);
+  const [annoTarget, setAnnoTarget] = useState<{ folderPath: string[]; materialName: string; messageCount: number } | null>(null);
+  const [annoDraft, setAnnoDraft] = useState<string[]>([]);
+  const [annoInput, setAnnoInput] = useState("");
+  const [annoApplyAll, setAnnoApplyAll] = useState(true);
+
+  const closeAnnoEditor = useCallback(() => {
+    setAnnoOpen(false);
+    setAnnoPos(null);
+    setAnnoTarget(null);
+    setAnnoInput("");
+  }, []);
+
+  const openAnnoEditor = useCallback((anchor: HTMLElement, node: MaterialNode | null) => {
+    if (!node || node.type !== "material")
+      return;
+    annoAnchorRef.current = anchor;
+    setAnnoTarget({ folderPath: [...folderPath], materialName: node.name, messageCount: node.messages?.length ?? 0 });
+    setAnnoDraft(getMaterialAnnotations(node));
+    setAnnoApplyAll(true);
+    setAnnoInput("");
+    setAnnoOpen(true);
+  }, [folderPath]);
+
+  useLayoutEffect(() => {
+    if (!annoOpen)
+      return;
+    const anchor = annoAnchorRef.current;
+    const tip = annoTipRef.current;
+    if (!anchor || !tip)
+      return;
+    const compute = () => {
+      const anchorRect = anchor.getBoundingClientRect();
+      const tipRect = tip.getBoundingClientRect();
+      const viewportW = window.innerWidth;
+      const viewportH = window.innerHeight;
+      const clampPos = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+      let left = anchorRect.left;
+      let top = anchorRect.bottom + 8;
+      if (left + tipRect.width > viewportW - 8) {
+        left = viewportW - 8 - tipRect.width;
+      }
+      if (top + tipRect.height > viewportH - 8) {
+        top = anchorRect.top - 8 - tipRect.height;
+      }
+      left = clampPos(left, 8, viewportW - tipRect.width - 8);
+      top = clampPos(top, 8, viewportH - tipRect.height - 8);
+      setAnnoPos({ left, top });
+    };
+    const id = window.requestAnimationFrame(compute);
+    return () => window.cancelAnimationFrame(id);
+  }, [annoOpen, annoDraft.length]);
+
+  useEffect(() => {
+    if (!annoOpen)
+      return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeAnnoEditor();
+      }
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      const tip = annoTipRef.current;
+      const anchor = annoAnchorRef.current;
+      const target = e.target as Node | null;
+      if (!target)
+        return;
+      if (tip && tip.contains(target))
+        return;
+      if (anchor && anchor.contains(target))
+        return;
+      closeAnnoEditor();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onMouseDown, true);
+    };
+  }, [annoOpen, closeAnnoEditor]);
+
+  const addAnnoTag = useCallback((tag: string) => {
+    const trimmed = tag.trim();
+    if (!trimmed)
+      return;
+    setAnnoDraft((prev) => {
+      if (prev.includes(trimmed))
+        return prev;
+      return [...prev, trimmed];
+    });
+  }, []);
+
+  const removeAnnoTag = useCallback((tag: string) => {
+    setAnnoDraft(prev => prev.filter(t => t !== tag));
+  }, []);
+
   const iconControlClass = "h-6 w-[26px] inline-flex items-center justify-center rounded-none text-[color:var(--tc-mpf-icon)] hover:text-[color:var(--tc-mpf-icon-hover)] active:opacity-90 transition focus:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--tc-mpf-accent)]";
   const iconDangerControlClass = "h-6 w-[26px] inline-flex items-center justify-center rounded-none text-[color:var(--tc-mpf-danger)] hover:text-[color:var(--tc-mpf-danger-hover)] active:opacity-90 transition focus:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--tc-mpf-danger-ring)]";
 
@@ -532,6 +728,16 @@ export default function MaterialPreviewFloat({
       throw new Error("素材包未加载完成");
     return content;
   }, [content, materialPackage]);
+
+  const saveAnnoEditor = useCallback(async () => {
+    if (!annoTarget)
+      return;
+    const next = draftUpdateMaterialAnnotations(ensureContent(), annoTarget.folderPath, annoTarget.materialName, annoDraft, { applyToAllMessages: annoApplyAll });
+    await saveContent(next);
+    closeAnnoEditor();
+  }, [annoApplyAll, annoDraft, annoTarget, closeAnnoEditor, ensureContent, saveContent]);
+
+  const annoEditorThemeVars = useMpfThemeVars();
 
   const handleCreatePackage = useCallback(async () => {
     const name = window.prompt("输入素材包名称", `素材箱 ${packages.length + 1}`);
@@ -1234,6 +1440,10 @@ export default function MaterialPreviewFloat({
                 const hintText = isFolder ? "文件夹" : (node.note?.trim() ? node.note : "素材");
                 const subtitle = isFolder ? `文件夹 · ${(node.children?.length ?? 0)}项` : hintText;
                 const key = `${node.type}:${name}`;
+                const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
+                const annotations = isFolder ? [] : getMaterialAnnotations(node);
+                const displayChips = annotations.slice(0, 3);
+                const moreCount = Math.max(0, annotations.length - displayChips.length);
 
                 return (
                   <div
@@ -1259,21 +1469,62 @@ export default function MaterialPreviewFloat({
                     }}
                   >
                     <div
-                      className="relative flex items-center justify-center bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)] border-b border-[color:var(--tc-mpf-border)]"
+                      className="relative flex items-center justify-center overflow-hidden bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)] border-b border-[color:var(--tc-mpf-border)]"
                       style={{ height: `${Math.max(64, Math.round(thumbSize * 0.62))}px` }}
                     >
-                      <div className="absolute left-2 top-2 inline-flex items-center rounded-none border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-text)] opacity-90">
-                        {isFolder ? "文件夹" : "素材"}
-                      </div>
-                      {isFolder
-                        ? <FolderIcon className="size-10 opacity-70" />
-                        : <FileImageIcon className="size-10 opacity-70" />}
+                      {thumbUrl && (
+                        <div className="absolute inset-0">
+                          <img
+                            src={thumbUrl}
+                            alt={name}
+                            className="absolute inset-0 w-full h-full object-cover opacity-95"
+                            loading="lazy"
+                            draggable={false}
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/0 to-black/10" />
+                        </div>
+                      )}
+                      {isFolder && <FolderIcon className="size-10 opacity-70" />}
+                      {!isFolder && !thumbUrl && <FileImageIcon className="size-10 opacity-70" />}
                     </div>
                     <div className="p-2">
                       <div className="text-[12px] font-semibold text-[color:var(--tc-mpf-text)] truncate" title={name}>{name}</div>
-                      <div className="text-[11px] text-[color:var(--tc-mpf-muted)] mt-1 truncate" title={subtitle}>
-                        {subtitle}
-                      </div>
+                      {isFolder ? (
+                        <div className="text-[11px] text-[color:var(--tc-mpf-muted)] mt-1 truncate" title={subtitle}>
+                          {subtitle}
+                        </div>
+                      ) : (
+                        <div
+                          className="mt-1 flex flex-wrap gap-1 min-h-[18px]"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openAnnoEditor(e.currentTarget as HTMLElement, node);
+                          }}
+                          title="点击编辑标签"
+                        >
+                          {displayChips.map(tag => (
+                            <span
+                              key={tag}
+                              className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-text)] opacity-95"
+                              title={tag}
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                          {moreCount > 0 && (
+                            <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]" title={annotations.join(" / ")}>
+                              +{moreCount}
+                            </span>
+                          )}
+                          {annotations.length === 0 && (
+                            <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]">
+                              {getNodeBaseType(node)}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1283,7 +1534,7 @@ export default function MaterialPreviewFloat({
 
           {content && viewMode === "list" && (
             <div className="border border-[color:var(--tc-mpf-border)] overflow-hidden bg-[color:var(--tc-mpf-surface)]">
-              <div className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[1fr_180px_96px]"} gap-2 px-3 py-2 bg-[color:var(--tc-mpf-surface-2)] border-b border-[color:var(--tc-mpf-border)] text-[11px] font-semibold text-[color:var(--tc-mpf-icon)]`}>
+              <div className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 bg-[color:var(--tc-mpf-surface-2)] border-b border-[color:var(--tc-mpf-border)] text-[11px] font-semibold text-[color:var(--tc-mpf-icon)]`}>
                 <div className="opacity-90">名称</div>
                 {!compactList && <div className="opacity-90">备注</div>}
                 <div className="text-right opacity-90">类型</div>
@@ -1294,10 +1545,16 @@ export default function MaterialPreviewFloat({
                   const name = node.name;
                   const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
                   const key = `${node.type}:${name}`;
+                  const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
+                  const annotations = isFolder ? [] : getMaterialAnnotations(node);
+                  const displayChips = annotations.slice(0, 3);
+                  const moreCount = Math.max(0, annotations.length - displayChips.length);
+                  const baseType = getNodeBaseType(node);
+                  const folderCountText = isFolder ? `${node.children?.length ?? 0} 项` : "";
                   return (
                     <div
                       key={`${node.type}:${name}`}
-                      className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[1fr_180px_96px]"} gap-2 px-3 py-2 text-xs border-t border-[color:var(--tc-mpf-border)] cursor-pointer ${
+                      className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 text-xs border-t border-[color:var(--tc-mpf-border)] cursor-pointer ${
                         isSelected ? "bg-[color:var(--tc-mpf-selected)]" : "hover:bg-[color:var(--tc-mpf-surface-3)]"
                       }`}
                       onClick={(e) => {
@@ -1315,21 +1572,80 @@ export default function MaterialPreviewFloat({
                         }
                       }}
                     >
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center gap-3 min-w-0">
                         {!compactList && (
-                          isFolder
-                            ? <FolderIcon className="size-4 opacity-70 shrink-0" />
-                            : <FileImageIcon className="size-4 opacity-70 shrink-0" />
+                          <div
+                            className="rounded-sm overflow-hidden border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] shrink-0 relative"
+                            style={{ width: `${listThumbBox.w}px`, height: `${listThumbBox.h}px` }}
+                          >
+                            {thumbUrl && (
+                              <BetterImg
+                                src={thumbUrl}
+                                className="w-full h-full object-cover"
+                              />
+                            )}
+                            {!thumbUrl && isFolder && (
+                              <div className="w-full h-full grid place-items-center bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)]">
+                                <FolderIcon className="size-7 opacity-70" />
+                              </div>
+                            )}
+                            {!thumbUrl && !isFolder && (
+                              <div className="w-full h-full grid place-items-center bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)]">
+                                <FileImageIcon className="size-7 opacity-70" />
+                              </div>
+                            )}
+                          </div>
                         )}
                         {compactList && (
                           <span className={`inline-block size-2 rounded-none border border-[color:var(--tc-mpf-dot-border)] shrink-0 ${isFolder ? "bg-[color:var(--tc-mpf-dot-folder)]" : "bg-[color:var(--tc-mpf-dot-file)]"}`} />
                         )}
-                        <div className="truncate text-[color:var(--tc-mpf-text)]">{name}</div>
+                        <div className="min-w-0">
+                          <div className="truncate text-[color:var(--tc-mpf-text)] font-medium">{name}</div>
+                          {!compactList && (
+                            <div
+                              className="mt-0.5 flex flex-wrap gap-1 min-h-[18px]"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                if (isFolder)
+                                  return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openAnnoEditor(e.currentTarget as HTMLElement, node);
+                              }}
+                              title={isFolder ? "" : "点击编辑标签"}
+                            >
+                              {isFolder && (
+                                <span className="text-[11px] text-[color:var(--tc-mpf-muted)]">
+                                  包含 {folderCountText}
+                                </span>
+                              )}
+                              {!isFolder && displayChips.map(tag => (
+                                <span
+                                  key={tag}
+                                  className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-text)] opacity-95"
+                                  title={tag}
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                              {!isFolder && moreCount > 0 && (
+                                <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]" title={annotations.join(" / ")}>
+                                  +{moreCount}
+                                </span>
+                              )}
+                              {!isFolder && annotations.length === 0 && (
+                                <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]">
+                                  {baseType}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       {!compactList && (
                         <div className="truncate text-[color:var(--tc-mpf-muted)]">{isFolder ? "" : (node.note ?? "")}</div>
                       )}
-                      <div className="text-right text-[color:var(--tc-mpf-muted)]">{isFolder ? "文件夹" : "素材"}</div>
+                      <div className="text-right text-[color:var(--tc-mpf-muted)]">{baseType}</div>
                     </div>
                   );
                 })}
@@ -1386,6 +1702,19 @@ export default function MaterialPreviewFloat({
           </button>
           <button
             type="button"
+            className={`${iconControlClass} disabled:opacity-40 disabled:cursor-not-allowed`}
+            disabled={selectedItem?.type !== "material"}
+            onClick={(e) => {
+              const anchor = e.currentTarget as HTMLElement;
+              openAnnoEditor(anchor, selectedNode);
+            }}
+            title={selectedItem?.type === "material" ? "编辑标签（annotations）" : "先选择一个素材"}
+            aria-label="编辑标签"
+          >
+            <TagIcon className="size-4 opacity-80" />
+          </button>
+          <button
+            type="button"
             className={iconControlClass}
             onClick={handleDelete}
             title="删除（按优先级）"
@@ -1413,6 +1742,170 @@ export default function MaterialPreviewFloat({
         className="hidden"
         onChange={handleImportChange}
       />
+
+      {annoOpen && createPortal(
+        <div
+          ref={annoTipRef}
+          className="tc-mpf pointer-events-auto z-[9999] rounded-md w-[340px] overflow-hidden"
+          style={{
+            position: "fixed",
+            left: annoPos?.left ?? 0,
+            top: annoPos?.top ?? 0,
+            ...annoEditorThemeVars,
+            border: "1px solid var(--tc-mpf-border)",
+            backgroundColor: "var(--tc-mpf-surface-2)",
+            color: "var(--tc-mpf-text)",
+            boxShadow: "var(--tc-mpf-shadow)",
+          }}
+        >
+          <style>{`
+            .tc-mpf .tc-mpf-anno-input::placeholder { color: var(--tc-mpf-muted); opacity: 1; }
+            .tc-mpf .tc-mpf-anno-btn:hover { background-color: var(--tc-mpf-surface-3); }
+            .tc-mpf .tc-mpf-anno-chip-remove:hover { color: var(--tc-mpf-text); }
+          `}</style>
+          <div
+            className="h-[34px] flex items-center justify-between px-[10px] select-none"
+            style={{
+              borderBottom: "1px solid var(--tc-mpf-border)",
+              background: "linear-gradient(180deg, var(--tc-mpf-surface-2), var(--tc-mpf-toolbar))",
+            }}
+          >
+            <div className="text-[13px] font-semibold">标签（annotations）</div>
+            <button
+              type="button"
+              className={iconControlClass}
+              onClick={() => closeAnnoEditor()}
+              aria-label="关闭"
+              title="关闭"
+              data-mpf-no-drag="1"
+            >
+              <XMarkICon className="size-4 opacity-80" />
+            </button>
+          </div>
+
+          <div
+            className="px-[10px] py-[10px] space-y-2"
+            style={{ backgroundColor: "var(--tc-mpf-toolbar)" }}
+          >
+            <div className="text-[12px] opacity-80 truncate" title={annoTarget?.materialName ?? ""}>
+              {annoTarget?.materialName ?? ""}
+            </div>
+
+            {(annoTarget?.messageCount ?? 0) > 1 && (
+              <label className="flex items-center gap-2 text-[12px] opacity-90 select-none">
+                <input
+                  type="checkbox"
+                  checked={annoApplyAll}
+                  onChange={(e) => setAnnoApplyAll(e.target.checked)}
+                />
+                应用到该素材的全部消息
+              </label>
+            )}
+
+            <div className="flex flex-wrap gap-1 min-h-[22px]">
+              {annoDraft.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 rounded-sm px-2 py-[1px] text-[12px]"
+                  style={{
+                    border: "1px solid var(--tc-mpf-border)",
+                    backgroundColor: "var(--tc-mpf-surface)",
+                    color: "var(--tc-mpf-text)",
+                  }}
+                >
+                  <span className="max-w-[240px] truncate" title={tag}>{tag}</span>
+                  <button
+                    type="button"
+                    className="tc-mpf-anno-chip-remove"
+                    onClick={() => removeAnnoTag(tag)}
+                    aria-label={`移除 ${tag}`}
+                    style={{ color: "var(--tc-mpf-muted)" }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {annoDraft.length === 0 && (
+                <span className="text-[12px]" style={{ color: "var(--tc-mpf-muted)" }}>暂无标签</span>
+              )}
+            </div>
+
+            <input
+              value={annoInput}
+              onChange={e => setAnnoInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addAnnoTag(annoInput);
+                  setAnnoInput("");
+                }
+              }}
+              placeholder="输入标签，回车添加…"
+              className="tc-mpf-anno-input w-full h-7 rounded-none px-2 text-[12px] focus:outline-none"
+              style={{
+                border: "1px solid var(--tc-mpf-border)",
+                backgroundColor: "var(--tc-mpf-input-bg)",
+                color: "var(--tc-mpf-text)",
+              }}
+            />
+
+            <div className="pt-1">
+              <div className="text-[11px] opacity-70 mb-1">常用</div>
+              <div className="flex flex-wrap gap-1">
+              {COMMON_ANNOTATIONS.filter(tag => !annoDraft.includes(tag)).map(tag => (
+                <button
+                  key={tag}
+                  type="button"
+                  className="tc-mpf-anno-btn rounded-sm px-2 py-[2px] text-[12px] active:opacity-90"
+                  onClick={() => addAnnoTag(tag)}
+                  style={{
+                    border: "1px solid var(--tc-mpf-border)",
+                    backgroundColor: "var(--tc-mpf-surface)",
+                    color: "var(--tc-mpf-text)",
+                  }}
+                >
+                  {tag}
+                </button>
+              ))}
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="h-[36px] flex items-center justify-end gap-2 px-[10px]"
+            style={{
+              borderTop: "1px solid var(--tc-mpf-border)",
+              background: "linear-gradient(180deg, var(--tc-mpf-toolbar), var(--tc-mpf-surface-2))",
+            }}
+          >
+            <button
+              type="button"
+              className="tc-mpf-anno-btn h-7 px-3 rounded-none text-[12px] active:opacity-90"
+              onClick={() => closeAnnoEditor()}
+              style={{
+                border: "1px solid var(--tc-mpf-border)",
+                backgroundColor: "var(--tc-mpf-surface)",
+                color: "var(--tc-mpf-text)",
+              }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="tc-mpf-anno-btn h-7 px-3 rounded-none text-[12px] active:opacity-90"
+              onClick={() => void saveAnnoEditor()}
+              style={{
+                border: "1px solid var(--tc-mpf-accent)",
+                backgroundColor: "var(--tc-mpf-surface)",
+                color: "var(--tc-mpf-text)",
+              }}
+            >
+              保存
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {!isEmbedded && (
         <div

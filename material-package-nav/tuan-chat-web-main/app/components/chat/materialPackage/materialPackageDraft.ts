@@ -75,6 +75,50 @@ function renameMaterialByName(nodes: MaterialNode[], name: string, nextName: str
   return changed ? next : nodes;
 }
 
+function updateMaterialAnnotationsByName(
+  nodes: MaterialNode[],
+  name: string,
+  nextAnnotations: string[],
+  applyToAllMessages: boolean,
+): MaterialNode[] {
+  const trimmedName = name.trim();
+  if (!trimmedName)
+    return nodes;
+
+  const normalized = nextAnnotations
+    .map(a => (typeof a === "string" ? a.trim() : ""))
+    .filter(Boolean);
+
+  let changed = false;
+  const next = nodes.map((n) => {
+    if (n.type !== "material" || n.name !== trimmedName)
+      return n;
+
+    const messages = Array.isArray(n.messages) ? n.messages : [];
+    if (!messages.length)
+      return n;
+
+    let nodeChanged = false;
+    const nextMessages = messages.map((msg, idx) => {
+      if (!applyToAllMessages && idx > 0)
+        return msg;
+      const prev = Array.isArray(msg.annotations) ? msg.annotations : [];
+      const same = prev.length === normalized.length && prev.every((v, i) => v === normalized[i]);
+      if (same)
+        return msg;
+      nodeChanged = true;
+      return { ...msg, annotations: normalized };
+    });
+
+    if (!nodeChanged)
+      return n;
+    changed = true;
+    return { ...n, messages: nextMessages } as MaterialNode;
+  });
+
+  return changed ? next : nodes;
+}
+
 export function draftCreateFolder(content: MaterialPackageContent, folderPath: string[], folderName: string): MaterialPackageContent {
   const trimmed = folderName.trim();
   if (!trimmed)
@@ -134,10 +178,23 @@ export function draftRenameMaterial(
   return updateContentAtPath(content, folderPath, nodes => renameMaterialByName(nodes, from, to, nextNote));
 }
 
+export function draftUpdateMaterialAnnotations(
+  content: MaterialPackageContent,
+  folderPath: string[],
+  materialName: string,
+  nextAnnotations: string[],
+  options?: { applyToAllMessages?: boolean },
+): MaterialPackageContent {
+  const name = materialName.trim();
+  if (!name)
+    return content;
+  const applyToAll = options?.applyToAllMessages !== false;
+  return updateContentAtPath(content, folderPath, nodes => updateMaterialAnnotationsByName(nodes, name, nextAnnotations, applyToAll));
+}
+
 export function buildEmptyMaterialPackageContent(): MaterialPackageContent {
   return {
     version: 1,
     root: [],
   };
 }
-
