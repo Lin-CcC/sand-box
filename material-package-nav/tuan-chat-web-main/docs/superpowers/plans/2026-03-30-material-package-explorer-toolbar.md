@@ -17,6 +17,10 @@
   - State: tree selection + “default target package”
   - Dialogs: Choose Package, Import Conflicts
   - Actions: New File/Folder/Package, Import, Refresh, Reveal
+- Create: `app/components/chat/materialPackage/materialPackageExplorerOps.ts`
+  - Pure helpers (unit-testable): target resolution, path parsing, auto-rename algorithm, import-name planning
+- Test: `app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
+  - Unit tests for helpers: target-resolution matrix + auto-rename cases
 - Modify: `app/components/chat/materialPackage/materialPackageDraft.ts`
   - Add a draft helper to overwrite an existing material’s messages (for “Overwrite” import mode)
 - Test: `app/components/chat/materialPackage/materialPackageDraft.test.ts`
@@ -62,7 +66,9 @@
   - Add an icon button group on the right.
 
 - [ ] **Step 2: Implement “VSCode-like” visibility**
-  - Buttons are low-emphasis by default and become fully visible on hover of the row.
+  - Buttons are low-emphasis by default and become fully visible on hover of the row (TUAN-CHAT hit area).
+  - Also support keyboard/focus: if a toolbar button receives focus (Tab), keep the toolbar visible.
+  - Keep click hit-area stable (no layout shift when icons appear).
   - Use `PortalTooltip` tooltips for each action.
 
 - [ ] **Step 3: Wire buttons to placeholders**
@@ -78,6 +84,41 @@
 ---
 
 ## Chunk 2: Target resolution + dialogs
+
+### Task 3: Add pure helper module + unit tests (target resolution + auto-rename)
+
+**Files:**
+- Create: `app/components/chat/materialPackage/materialPackageExplorerOps.ts`
+- Test: `app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
+
+- [ ] **Step 1: Implement `autoRenameVsCodeLike(name, usedNames)`**
+  - Insert ` (n)` before last extension:
+    - `foo.txt` → `foo (1).txt`
+    - `archive.tar.gz` → `archive.tar (1).gz`
+    - `.env` (dotfile) treated as “no extension”: `.env (1)`
+
+- [ ] **Step 2: Implement `payloadPathToFolderNames(payload.path)`**
+  - Convert segments like `folder:场景` into folder name array `["场景"]`.
+
+- [ ] **Step 3: Implement `resolveTarget({ selectedNode, packages, defaultTargetPackageId })`**
+  - Exact matrix (must match spec):
+    - packageCount==0: return `blocked:no-packages`
+    - selected folder: target = that folder
+    - selected material: target = parent folder
+    - selected package: target = package root
+    - no selection + one package: target = that package root
+    - no selection + multiple: return `need-choose-package`
+
+- [ ] **Step 4: Write unit tests (Vitest)**
+  - Cover matrix above and auto-rename cases.
+
+- [ ] **Step 5: Run tests**
+  - `pnpm -s test app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
+  - Expected: PASS
+
+- [ ] **Step 6: Commit**
+  - `git add app/components/chat/materialPackage/materialPackageExplorerOps.ts app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
+  - `git commit -m \"test: add explorer ops helpers\"`
 
 ### Task 3: Implement “default target package” + target resolution rules
 
@@ -97,7 +138,9 @@
   - Convert from `payload.path` segments like `folder:xxx` / `material:yyy`.
 
 - [ ] **Step 3: Package-count==0 disabled behavior**
-  - Disable New File / New Folder / Import / Reveal with tooltip.
+  - Detect `packages.length === 0` and:
+    - Enable only **New Package**
+    - Disable **New File / New Folder / Import Local / Reveal** with tooltip “还没有素材箱，先创建一个”。
 
 - [ ] **Step 4: Typecheck**
   - Run `pnpm -s typecheck`
@@ -198,7 +241,7 @@
 
 - [ ] **Step 4: Draft mutations**
   - Folder: `draftCreateFolder(content, folderPath, name)`
-  - File: `draftCreateMaterial(content, folderPath, { type:\"material\", name, note:\"\", messages: [] })`
+  - File: `draftCreateMaterial(content, folderPath, { type:\"material\", name, note:\"\", messages: [] })` (required: any suffix allowed; empty note; empty messages)
 
 - [ ] **Step 5: Save + post-create reveal**
   - Save via `savePackageContent`.
@@ -227,6 +270,10 @@
   - Also detect duplicates inside the selected file list.
   - If no conflicts: import directly.
   - If conflicts: open Import Conflicts modal (Overwrite / Auto Rename / Cancel).
+  - Acceptance (must match spec):
+    - Overwrite: keep node position + name; replace `messages`; preserve `note`.
+    - Auto Rename: apply VSCode-like rename (insert before extension).
+    - Cancel: no changes.
 
 - [ ] **Step 4: Implement overwrite draft helper**
   - Add `draftReplaceMaterialMessages(content, folderPath, materialName, nextMessages)`:
@@ -293,10 +340,14 @@
 
 - [ ] Run `pnpm -s typecheck`
 - [ ] Run `pnpm -s test`
-- [ ] Manual smoke:
-  - Multi-package: create file/folder prompts Choose Package when nothing selected.
-  - Import with conflicts shows modal; Overwrite preserves note and position; Auto Rename inserts suffix before extension.
-  - Backend mode import shows placeholder rather than broken image/audio.
-  - Refresh refetches list.
-  - Reveal expands and scrolls correctly.
-
+- [ ] Manual smoke (explicit checklist):
+  - `packages.length===0`: only New Package enabled; others disabled with tooltip.
+  - Multi-package + no selection: New File/Folder/Import opens Choose Package; Cancel aborts; Confirm remembers until reload.
+  - Selection matrix: folder/material/package selection routes actions into correct target folder.
+  - New File creates `material` with `note:\"\"` and `messages: []` and any suffix in name is preserved.
+  - Import conflicts modal:
+    - Overwrite preserves `name` + `note` + position; replaces `messages`.
+    - Auto Rename uses `foo (1).ext` rule.
+    - Cancel makes no changes.
+  - Backend mode import: media url empty shows placeholder + hint (no broken media UI).
+  - Reveal: expands ancestors; scrolls row into view; no-selection shows hint or reveals default target package.
