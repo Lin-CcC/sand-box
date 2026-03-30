@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MPF - 标签弹窗配色对齐预览</title>
+    <style>
+      :root {
+        --tc-mpf-bg: #1c232d;
+        --tc-mpf-surface: #202836;
+        --tc-mpf-surface-2: #293245;
+        --tc-mpf-surface-3: #242d3d;
+        --tc-mpf-toolbar: #1f2735;
+        --tc-mpf-input-bg: #151b24;
+        --tc-mpf-border: #35455e;
+        --tc-mpf-border-strong: #425674;
+        --tc-mpf-text: #e7ebf3;
+        --tc-mpf-muted: #a4adbb;
+        --tc-mpf-accent: #78a6ff;
+        --tc-mpf-pop-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
+      }
+      html[data-theme="light"] {
+        --tc-mpf-bg: #e9eef6;
+        --tc-mpf-surface: #f2f5fa;
+        --tc-mpf-surface-2: #e4ebf5;
+        --tc-mpf-surface-3: #dbe4f1;
+        --tc-mpf-toolbar: #eef2f8;
+        --tc-mpf-input-bg: #f7f9fc;
+        --tc-mpf-border: #b7c3d6;
+        --tc-mpf-border-strong: #a7b6cd;
+        --tc-mpf-text: #1e2633;
+        --tc-mpf-muted: #5b6678;
+        --tc-mpf-accent: #2f6eea;
+        --tc-mpf-pop-shadow: 0 12px 28px rgba(13, 22, 35, 0.14);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        height: 100vh;
+        background: var(--tc-mpf-bg);
+        color: var(--tc-mpf-text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      .wrap {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 360px 1fr;
+      }
+      .side {
+        border-right: 1px solid var(--tc-mpf-border);
+        background: linear-gradient(180deg, var(--tc-mpf-toolbar), var(--tc-mpf-bg));
+        padding: 12px;
+      }
+      .side .bar {
+        height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-surface);
+        padding: 0 10px;
+      }
+      .side .panel {
+        margin-top: 12px;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-toolbar);
+        height: calc(100% - 66px);
+      }
+      .main {
+        position: relative;
+        background: radial-gradient(900px 600px at 20% 15%, rgba(120, 166, 255, 0.10), transparent 60%),
+                    radial-gradient(900px 600px at 80% 40%, rgba(120, 166, 255, 0.06), transparent 60%),
+                    var(--tc-mpf-bg);
+      }
+
+      /* Popup */
+      .popup {
+        position: absolute;
+        left: 64px;
+        top: 74px;
+        width: 340px;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid var(--popup-border, var(--tc-mpf-border-strong));
+        background: var(--popup-bg, var(--tc-mpf-toolbar));
+        box-shadow: var(--tc-mpf-pop-shadow);
+      }
+      .popup .head {
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--tc-mpf-border);
+        background: linear-gradient(180deg, var(--tc-mpf-surface-2), var(--tc-mpf-toolbar));
+      }
+      .popup .body {
+        padding: 10px;
+        background: var(--tc-mpf-toolbar);
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-surface);
+        padding: 1px 8px;
+        font-size: 12px;
+        margin-right: 6px;
+      }
+      .input {
+        margin-top: 8px;
+        width: 100%;
+        height: 28px;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-input-bg);
+        color: var(--tc-mpf-text);
+        padding: 0 10px;
+        outline: none;
+      }
+      .input::placeholder { color: var(--tc-mpf-muted); }
+
+      .controls {
+        position: absolute;
+        right: 16px;
+        top: 16px;
+        width: 360px;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-surface);
+        padding: 12px;
+      }
+      .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+      button {
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid var(--tc-mpf-border);
+        background: var(--tc-mpf-toolbar);
+        color: var(--tc-mpf-text);
+        cursor: pointer;
+        font-size: 12px;
+      }
+      button:hover { background: var(--tc-mpf-surface-2); }
+      .hint { font-size: 12px; color: var(--tc-mpf-muted); line-height: 1.4; }
+      .kbd {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 11px;
+        padding: 2px 6px;
+        border: 1px solid var(--tc-mpf-border);
+        background: rgba(0,0,0,0.12);
+        color: var(--tc-mpf-muted);
+      }
+      html[data-theme="light"] .kbd { background: rgba(30,38,51,0.06); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <aside class="side">
+        <div class="bar">
+          <div style="font-weight:650;">目录（参考色）</div>
+          <div class="hint">边框/底色以此为准</div>
+        </div>
+        <div class="panel"></div>
+      </aside>
+
+      <main class="main">
+        <div class="popup" id="popup">
+          <div class="head">
+            <div style="font-weight:650;font-size:13px;">标签（annotations）</div>
+            <div class="hint">×</div>
+          </div>
+          <div class="body">
+            <div class="hint" style="margin-bottom:8px;">ex1 tg 11f.png</div>
+            <span class="chip">背景 ×</span>
+            <input class="input" placeholder="输入标签，回车添加…" />
+            <div class="hint" style="margin-top:10px;">常用：BGM / 立绘 / 音效 / 展示 / 旁白 / 环境 / 文本</div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <div style="font-weight:650;">配色对齐预览</div>
+          <div class="hint" style="margin-top:6px;">
+            目标：让弹窗更接近目录的底色与边框，减小割裂感。<br/>
+            <span class="kbd">切主题</span> 看亮/暗一致性。
+          </div>
+          <div class="row">
+            <button id="themeBtn">切主题</button>
+            <button id="toneA">A：更贴近目录（推荐）</button>
+            <button id="toneB">B：更浮起（对比更强）</button>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            A：弹窗底色 = toolbar，外边框 = border-strong<br/>
+            B：弹窗底色 = surface-2，外边框 = border
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const popup = document.getElementById("popup");
+      const setToneA = () => {
+        popup.style.setProperty("--popup-bg", "var(--tc-mpf-toolbar)");
+        popup.style.setProperty("--popup-border", "var(--tc-mpf-border-strong)");
+      };
+      const setToneB = () => {
+        popup.style.setProperty("--popup-bg", "var(--tc-mpf-surface-2)");
+        popup.style.setProperty("--popup-border", "var(--tc-mpf-border)");
+      };
+
+      document.getElementById("toneA").addEventListener("click", setToneA);
+      document.getElementById("toneB").addEventListener("click", setToneB);
+      document.getElementById("themeBtn").addEventListener("click", () => {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      });
+
+      // default
+      setToneA();
+    </script>
+  </body>
+</html>
+

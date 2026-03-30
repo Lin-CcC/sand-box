@@ -839,7 +839,7 @@ export default function MaterialPreviewFloat({
     return () => window.clearTimeout(t);
   }, [inlineEdit]);
 
-  const annoEditorThemeVars = useMpfThemeVars();
+  const mpfThemeVars = useMpfThemeVars();
 
   const handleCreatePackage = useCallback(async () => {
     const name = window.prompt("输入素材包名称", `素材箱 ${packages.length + 1}`);
@@ -1265,21 +1265,22 @@ export default function MaterialPreviewFloat({
   }, [buildDockPayload, computeDockInsertIndex, onDock]);
 
   return (
-    <div
-      ref={containerRef}
-      className={isEmbedded
-        ? "tc-mpf relative flex flex-col w-full h-full rounded-md border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-bg)] text-[color:var(--tc-mpf-text)] shadow-[var(--tc-mpf-shadow)] overflow-hidden"
-        : "tc-mpf absolute z-[40] flex flex-col rounded-md border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-bg)] text-[color:var(--tc-mpf-text)] shadow-[var(--tc-mpf-shadow)] overflow-hidden"}
-      onPointerMove={isEmbedded ? undefined : onContainerPointerMove}
-      onPointerUp={isEmbedded ? undefined : onContainerPointerUp}
-      onPointerCancel={isEmbedded ? undefined : onContainerPointerUp}
-      style={{
-        left: isEmbedded ? undefined : `${pos.x}px`,
-        top: isEmbedded ? undefined : `${pos.y}px`,
-        width: isEmbedded ? "100%" : `${shellSize.w}px`,
-        height: isEmbedded ? "100%" : `${shellSize.h}px`,
-      }}
-    >
+      <div
+        ref={containerRef}
+        className={isEmbedded
+          ? "tc-mpf relative flex flex-col w-full h-full rounded-md border border-[color:var(--tc-mpf-shell-border)] bg-[color:var(--tc-mpf-bg)] text-[color:var(--tc-mpf-text)] shadow-[var(--tc-mpf-shadow)] overflow-hidden"
+          : "tc-mpf absolute z-[40] flex flex-col rounded-md border border-[color:var(--tc-mpf-shell-border)] bg-[color:var(--tc-mpf-bg)] text-[color:var(--tc-mpf-text)] shadow-[var(--tc-mpf-shadow)] overflow-hidden"}
+        onPointerMove={isEmbedded ? undefined : onContainerPointerMove}
+        onPointerUp={isEmbedded ? undefined : onContainerPointerUp}
+        onPointerCancel={isEmbedded ? undefined : onContainerPointerUp}
+        style={{
+          ...mpfThemeVars,
+          left: isEmbedded ? undefined : `${pos.x}px`,
+          top: isEmbedded ? undefined : `${pos.y}px`,
+          width: isEmbedded ? "100%" : `${shellSize.w}px`,
+          height: isEmbedded ? "100%" : `${shellSize.h}px`,
+        }}
+      >
       {/* Tabs bar (prototype: tabs) */}
       <div
         className={`h-[34px] flex items-stretch border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] select-none ${(!isEmbedded || isDockedEmbedded) ? "touch-none" : ""}`}
@@ -1558,7 +1559,7 @@ export default function MaterialPreviewFloat({
                     className={`border transition-colors overflow-hidden cursor-pointer ${
                       isSelected
                         ? "border-[color:var(--tc-mpf-accent)] bg-[color:var(--tc-mpf-surface-2)]"
-                        : "border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface)] hover:bg-[color:var(--tc-mpf-surface-3)]"
+                        : "border-[color:var(--tc-mpf-item-border)] bg-[color:var(--tc-mpf-surface)] hover:bg-[color:var(--tc-mpf-surface-3)]"
                     }`}
                     onClick={(e) => {
                       e.preventDefault();
@@ -1761,7 +1762,7 @@ export default function MaterialPreviewFloat({
           )}
 
           {content && viewMode === "list" && (
-            <div className="border border-[color:var(--tc-mpf-border)] overflow-hidden bg-[color:var(--tc-mpf-surface)]">
+            <div className="border border-[color:var(--tc-mpf-item-border)] overflow-hidden bg-[color:var(--tc-mpf-surface)]">
               <div className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 bg-[color:var(--tc-mpf-surface-2)] border-b border-[color:var(--tc-mpf-border)] text-[11px] font-semibold text-[color:var(--tc-mpf-icon)]`}>
                 <div className="opacity-90">名称</div>
                 {!compactList && <div className="opacity-90">备注</div>}
@@ -1807,7 +1808,7 @@ export default function MaterialPreviewFloat({
                       <div className="flex items-center gap-3 min-w-0">
                         {!compactList && (
                           <div
-                            className="rounded-sm overflow-hidden border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] shrink-0 relative"
+                            className="rounded-sm overflow-hidden border border-[color:var(--tc-mpf-item-border)] bg-[color:var(--tc-mpf-surface-2)] shrink-0 relative"
                             style={{ width: `${listThumbBox.w}px`, height: `${listThumbBox.h}px` }}
                           >
                             {thumbUrl && (
@@ -2100,11 +2101,11 @@ export default function MaterialPreviewFloat({
             position: "fixed",
             left: annoPos?.left ?? 0,
             top: annoPos?.top ?? 0,
-            ...annoEditorThemeVars,
-            border: "1px solid var(--tc-mpf-border)",
-            backgroundColor: "var(--tc-mpf-surface-2)",
+            ...mpfThemeVars,
+            border: "1px solid var(--tc-mpf-border-strong)",
+            backgroundColor: "var(--tc-mpf-toolbar)",
             color: "var(--tc-mpf-text)",
-            boxShadow: "var(--tc-mpf-shadow)",
+            boxShadow: "var(--tc-mpf-pop-shadow)",
           }}
         >
           <style>{`

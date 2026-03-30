@@ -28,14 +28,23 @@ export function useMpfThemeVars() {
     // Follow global theme (light/dark), but keep a consistent "mpf" tone and avoid pure black/white.
     if (isDarkTheme) {
       return {
-        "--tc-mpf-bg": "#1c232d",
-        "--tc-mpf-surface": "#202836",
-        "--tc-mpf-surface-2": "#293245",
-        "--tc-mpf-surface-3": "#242d3d",
-        "--tc-mpf-toolbar": "#1f2735",
+        // Directory base tone.
+        "--tc-mpf-bg": "#191E24",
+        // Nearby surfaces (slightly lifted, still close to directory).
+        "--tc-mpf-surface": "#1B2128",
+        "--tc-mpf-surface-2": "#1D242C",
+        "--tc-mpf-surface-3": "#202834",
+        // Align with the directory panel tone.
+        "--tc-mpf-toolbar": "#191E24",
         "--tc-mpf-input-bg": "#151b24",
-        "--tc-mpf-border": "#35455e",
-        "--tc-mpf-border-strong": "#425674",
+        // Directory split line / inner dividers.
+        "--tc-mpf-border": "#151B24",
+        // Directory outer border tone.
+        "--tc-mpf-border-strong": "#A4ADBB",
+        // Window shell border (slightly stronger than inner dividers, but still subtle).
+        "--tc-mpf-shell-border": "rgba(164, 173, 187, 0.22)",
+        // Item/card border (slightly clearer than inner dividers).
+        "--tc-mpf-item-border": "rgba(164, 173, 187, 0.18)",
         "--tc-mpf-text": "#e7ebf3",
         "--tc-mpf-muted": "#a4adbb",
         "--tc-mpf-crumb": "#b8c0cd",
@@ -49,7 +58,9 @@ export function useMpfThemeVars() {
         "--tc-mpf-dot-border": "#41506a",
         "--tc-mpf-dot-folder": "#95a2b8",
         "--tc-mpf-dot-file": "#78a6ff",
-        "--tc-mpf-shadow": "0 18px 40px rgba(0, 0, 0, 0.34)",
+        // Softer edge separation from the main panel (Windows-like subtle outline).
+        "--tc-mpf-shadow": "0 18px 40px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(164, 173, 187, 0.18)",
+        "--tc-mpf-pop-shadow": "0 12px 28px rgba(0, 0, 0, 0.26)",
         "--tc-mpf-range-track": "rgba(255, 255, 255, 0.18)",
         "--tc-mpf-range-thumb": "rgba(170, 210, 255, 0.86)",
         "--tc-mpf-grip": "#7b8699",
@@ -57,14 +68,23 @@ export function useMpfThemeVars() {
     }
 
     return {
-      "--tc-mpf-bg": "#e9eef6",
-      "--tc-mpf-surface": "#f2f5fa",
-      "--tc-mpf-surface-2": "#e4ebf5",
-      "--tc-mpf-surface-3": "#dbe4f1",
-      "--tc-mpf-toolbar": "#eef2f8",
-      "--tc-mpf-input-bg": "#f7f9fc",
-      "--tc-mpf-border": "#b7c3d6",
-      "--tc-mpf-border-strong": "#a7b6cd",
+      // Directory base tone (light).
+      "--tc-mpf-bg": "#F8F8F8",
+      "--tc-mpf-toolbar": "#F8F8F8",
+      // Nearby surfaces (slightly lifted, still close to directory).
+      "--tc-mpf-surface": "#F6F8FB",
+      // Directory right divider tone.
+      "--tc-mpf-surface-2": "#EEF2F8",
+      "--tc-mpf-surface-3": "#E7ECF4",
+      "--tc-mpf-input-bg": "#FCFDFE",
+      // Directory split line / inner dividers.
+      "--tc-mpf-border": "#EEF2F8",
+      // Directory outer border tone.
+      "--tc-mpf-border-strong": "#B7C3D6",
+      // Window shell border: use the directory border tone but softer (avoid "hard" deep line).
+      "--tc-mpf-shell-border": "rgba(183, 195, 214, 0.92)",
+      // Item/card border: slightly clearer than the shell border for list/icon items.
+      "--tc-mpf-item-border": "rgba(183, 195, 214, 0.95)",
       "--tc-mpf-text": "#1e2633",
       "--tc-mpf-muted": "#5b6678",
       "--tc-mpf-crumb": "#3b4658",
@@ -78,11 +98,11 @@ export function useMpfThemeVars() {
       "--tc-mpf-dot-border": "#9fb0c9",
       "--tc-mpf-dot-folder": "#6c7a91",
       "--tc-mpf-dot-file": "#2f6eea",
-      "--tc-mpf-shadow": "0 18px 40px rgba(13, 22, 35, 0.16)",
+      "--tc-mpf-shadow": "0 18px 40px rgba(13, 22, 35, 0.12), 0 0 0 1px rgba(183, 195, 214, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.65)",
+      "--tc-mpf-pop-shadow": "0 12px 28px rgba(13, 22, 35, 0.14)",
       "--tc-mpf-range-track": "rgba(30, 38, 51, 0.20)",
       "--tc-mpf-range-thumb": "rgba(47, 110, 234, 0.75)",
       "--tc-mpf-grip": "#74839b",
     } as unknown as React.CSSProperties;
   }, [isDarkTheme]);
 }
-
