@@ -28,6 +28,8 @@
 - Modify: `app/components/chat/materialPackage/materialPreviewFloat.tsx`
   - Backend-mode import placeholder: if media `url==""`, show a non-broken placeholder UI (per spec)
 
+> Note on commits: checkpoint commits are **optional** and should only be done if the repo workflow and the user request allow committing. If commits are not desired, skip the commit steps and rely on `git diff` for review.
+
 ---
 
 ## Chunk 1: Tree selection + toolbar skeleton
@@ -52,7 +54,7 @@
   - Run `pnpm -s typecheck`
   - Open the app and confirm: single click highlights; double click still opens preview.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Checkpoint (optional): commit**
   - `git add app/components/chat/materialPackage/materialPackageNavPanel.tsx`
   - `git commit -m "feat: add explorer selection state"`
 
@@ -77,7 +79,7 @@
 - [ ] **Step 4: Typecheck**
   - Run `pnpm -s typecheck`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Checkpoint (optional): commit**
   - `git add app/components/chat/materialPackage/materialPackageNavPanel.tsx`
   - `git commit -m "feat: add explorer TUAN-CHAT toolbar shell"`
 
@@ -116,7 +118,7 @@
   - `pnpm -s test app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
   - Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Checkpoint (optional): commit**
   - `git add app/components/chat/materialPackage/materialPackageExplorerOps.ts app/components/chat/materialPackage/materialPackageExplorerOps.test.ts`
   - `git commit -m \"test: add explorer ops helpers\"`
 
@@ -127,9 +129,9 @@
 
 - [ ] **Step 1: Add `defaultTargetPackageId` state**
   - Session-only; resets on reload.
-  - Update it when:
+  - Update it only when:
     - user confirms Choose Package dialog
-    - (optional per spec recommendation) user explicitly selects a package/folder/material row
+    - user creates a new package via the toolbar (set default to the newly created package)
 
 - [ ] **Step 2: Add a helper to compute target**
   - Given `(selectedNode, packages, defaultTargetPackageId)` return:
@@ -145,7 +147,7 @@
 - [ ] **Step 4: Typecheck**
   - Run `pnpm -s typecheck`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Checkpoint (optional): commit**
   - `git add app/components/chat/materialPackage/materialPackageNavPanel.tsx`
   - `git commit -m "feat: add explorer target resolution"`
 
@@ -173,7 +175,7 @@
 - [ ] **Step 4: Typecheck**
   - Run `pnpm -s typecheck`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Checkpoint (optional): commit**
   - `git add app/components/chat/materialPackage/materialPackageNavPanel.tsx`
   - `git commit -m \"feat: add choose-package dialog for explorer actions\"`
 
@@ -198,7 +200,7 @@
   - Backend mode: call `updateMaterialPackage({ packageId, content })`, then invalidate list query.
   - Mock mode: call `savePackageRecord({ ...record, content })`.
 
-- [ ] **Step 4: Typecheck + commit**
+- [ ] **Step 4: Typecheck + checkpoint (optional): commit**
   - `pnpm -s typecheck`
   - Commit.
 
@@ -219,7 +221,7 @@
   - Ensure the new package row is expanded (set its `root:${id}` collapsed state to `false`).
   - Select it and scroll it into view.
 
-- [ ] **Step 4: Typecheck + commit**
+- [ ] **Step 4: Typecheck + checkpoint (optional): commit**
 
 ### Task 7: New Folder + New File actions
 
@@ -247,7 +249,7 @@
   - Save via `savePackageContent`.
   - Expand ancestors + scroll to the new node.
 
-- [ ] **Step 6: Typecheck + commit**
+- [ ] **Step 6: Typecheck + checkpoint (optional): commit**
 
 ### Task 8: Import Local action (including conflicts)
 
@@ -302,7 +304,7 @@
   - `pnpm -s test app/components/chat/materialPackage/materialPackageDraft.test.ts`
   - Expected: PASS
 
-- [ ] **Step 9: Typecheck + commit**
+- [ ] **Step 9: Typecheck + checkpoint (optional): commit**
   - `pnpm -s typecheck`
   - Commit.
 
@@ -311,10 +313,11 @@
 **Files:**
 - Modify: `app/components/chat/materialPackage/materialPackageNavPanel.tsx`
 
-- [ ] **Step 1: Invalidate list query**
-  - Use `queryClient.invalidateQueries({ queryKey: buildMaterialPackageMyQueryKey(useBackend) })`.
+- [ ] **Step 1: Refetch list query**
+  - Prefer calling `packagesQuery.refetch()` (source of truth is the existing `useQuery` in this component).
+  - If needed, also call `queryClient.invalidateQueries({ queryKey: buildMaterialPackageMyQueryKey(useBackend) })`.
 
-- [ ] **Step 2: Typecheck + commit**
+- [ ] **Step 2: Typecheck + checkpoint (optional): commit**
 
 ### Task 10: Reveal/Expand Selection action
 
@@ -332,7 +335,7 @@
   - If `defaultTargetPackageId` exists: reveal that package.
   - Else: show toast/hint “请先选择一个素材箱或目录” (fallback to `alert` if no toast infra).
 
-- [ ] **Step 4: Typecheck + commit**
+- [ ] **Step 4: Typecheck + checkpoint (optional): commit**
 
 ---
 
