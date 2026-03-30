@@ -41,6 +41,12 @@ Scope: Left panel “我的素材包” tree (`MaterialPackageNavPanel`) top-row
 
 All actions that create/import inside a package must resolve a **target folder path**:
 
+### If package count == 0 (no packages yet)
+
+- Only **New Package** is enabled.
+- **New File / New Folder / Import Local / Reveal** are disabled with tooltip: “还没有素材箱，先创建一个”。
+- Optional UX polish (non-blocking): clicking a disabled action can open the New Package prompt directly.
+
 ### If there is a selection
 
 - Selected **folder**: target = that folder.
@@ -67,6 +73,19 @@ All actions that create/import inside a package must resolve a **target folder p
   - `messages: []` (explicitly allowed empty; preview shows an empty-state)
 - After creation, optionally auto-select it and enter rename mode (future polish; not required to ship the core toolbar).
 
+## Name conflicts (New File / New Folder / New Package)
+
+We need deterministic behavior when the user enters a name that already exists in the target scope.
+
+- **Within a folder (folder children names):** treat names as **exact-match unique** (current implementation uses exact string comparisons).
+- **New File / New Folder** (inside a package folder):
+  - If the name already exists among siblings (same type or different type), **auto-rename** by appending ` (1)`, ` (2)`… until unique (VSCode-like).
+  - Show a subtle toast/hint: `已存在，已重命名为 <newName>`.
+- **New Package** (top-level list):
+  - Allow duplicate package names at the data level, but for UX we also **auto-rename** to avoid confusion in the tree.
+
+Note: case-sensitivity follows exact string match for now (e.g. `A.png` and `a.png` are considered different). If we later decide to be case-insensitive (Windows-like), we will normalize comparisons at a single helper.
+
 ## Import Local: name conflicts
 
 When importing into a folder, if any incoming file name collides with existing `material.name`:
@@ -79,6 +98,29 @@ When importing into a folder, if any incoming file name collides with existing `
 Notes:
 - Only conflicts for files (materials) matter; folders are not created via import in this scope.
 - The dialog is per import batch; apply decision to all conflicts in the batch (simple UX).
+
+### Import mapping (local file → material.messages)
+
+Implementation should reuse the current “import” mapping used by the preview window (`MaterialPreviewFloat`) so behavior is consistent:
+
+- Image (`.png/.jpg/.jpeg/.webp/.gif/.bmp`):
+  - create one message: `messageType: 2`, `annotations: ["图片"]`, `extra.imageMessage = { url, fileName }`
+- Audio (`.mp3/.wav/.ogg/.flac/.m4a`):
+  - create one message: `messageType: 3`, `annotations: ["音频"]`, `extra.soundMessage = { url, fileName }`
+- Text (`.txt/.md`):
+  - create one message: `messageType: 1`, `annotations: ["文本"]`, `content = file.text()`
+- Other:
+  - create one message: `messageType: 1`, `annotations: ["文件"]`, `content = file.name`
+
+URL behavior:
+- In **mock/local** mode: `url = URL.createObjectURL(file)` (works for preview but is not durable across reloads).
+- In **backend** mode (until upload API exists): set `url = ""` and still create the node; later we can upgrade to real upload + url.
+
+### Import collisions within the same batch
+
+- If two selected local files share the same name, treat it as a collision and apply the user’s choice consistently:
+  - **Overwrite**: the latter file overwrites earlier result (deterministic order: file input order).
+  - **Auto Rename**: rename within the batch as well using ` (1)`, ` (2)`… against the union of existing target names + names already assigned in this batch.
 
 ## Refresh behavior
 
@@ -121,3 +163,7 @@ Selection is set on single click on a row (package/folder/file). Double click co
 - When multiple packages exist and nothing is selected, the “Choose Package” dialog prevents ambiguity.
 - Reveal/Expand Selection works and feels VSCode-like.
 
+## Minimal error handling expectations
+
+- Any create/import/save failure must show user feedback (toast/snackbar preferred; fallback to `alert` is acceptable for sandbox).
+- On failure, do not partially update the local tree state (either apply changes after save succeeds, or revert on error).
