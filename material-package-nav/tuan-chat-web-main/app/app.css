@@ -1,0 +1,362 @@
+@layer blocksuite;
+@import "tailwindcss";
+@source "./**/*.js";
+@source "./**/*.jsx";
+@source "./**/*.ts";
+@source "./**/*.tsx";
+@source "../api/**/*.js";
+@source "../api/**/*.jsx";
+@source "../api/**/*.ts";
+@source "../api/**/*.tsx";
+@source "../electron/**/*.js";
+@source "../electron/**/*.jsx";
+@source "../electron/**/*.ts";
+@source "../electron/**/*.tsx";
+@plugin "daisyui";
+@plugin "daisyui" {
+  themes: all;
+}
+@plugin "daisyui/theme" {
+  name: "light";
+  default: false;
+  prefersdark: false;
+  color-scheme: "light";
+  --radius-selector: 0.375rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.375rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: "dark";
+  --radius-selector: 0.375rem;
+  --radius-field: 0.375rem;
+  --radius-box: 0.375rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  --font-sans:
+    "Inter", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
+    "Noto Color Emoji";
+}
+
+:root {
+  --tc-safe-area-top: env(safe-area-inset-top, 0px);
+  --tc-safe-area-right: env(safe-area-inset-right, 0px);
+  --tc-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --tc-safe-area-left: env(safe-area-inset-left, 0px);
+}
+
+html,
+body {
+  @apply bg-white dark:bg-gray-950;
+
+  @media (prefers-color-scheme: dark) {
+    color-scheme: dark;
+  }
+}
+
+body {
+  width: 100%;
+  max-width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+@supports (height: 100dvh) {
+  body {
+    height: 100dvh;
+    max-height: 100dvh;
+    min-height: 100dvh;
+  }
+}
+
+.chat-lock-scroll {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100vh;
+  max-height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+@supports (height: 100dvh) {
+  .chat-lock-scroll {
+    height: 100dvh;
+    max-height: 100dvh;
+    min-height: 100dvh;
+  }
+}
+
+/* 全局缩放系数变量，用于优化移动端的组件大小*/
+@media (max-width: 639px) {
+  :root {
+    font-size: 15px; /* 基础缩放 (15/16=0.9375) */
+    --scale-factor: 0.9375;
+  }
+
+  /* 移动端：聊天输入框文字与 placeholder 同步变小（仅影响 ChatInputArea） */
+  .chatInputTextarea {
+    font-size: 0.875rem;
+  }
+  .chatInputTextarea.div-textarea[data-has-text="false"]::before {
+    font-size: inherit;
+  }
+}
+@media (max-width: 480px) {
+  :root {
+    font-size: 14px; /* 基础缩放 (14/16=0.875) */
+    --scale-factor: 0.875;
+  }
+
+  /* 更窄屏进一步缩小 */
+  .chatInputTextarea {
+    font-size: 0.8125rem;
+  }
+  .chatInputTextarea.div-textarea[data-has-text="false"]::before {
+    font-size: inherit;
+  }
+}
+
+.div-textarea {
+  position: relative;
+}
+
+.div-textarea[data-has-text="false"]::before {
+  content: attr(data-placeholder);
+  opacity: 0.6;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  padding: 0.5rem;
+  white-space: pre-wrap;
+}
+
+.chatInputTextarea {
+  word-break: break-all;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chatInputTextarea {
+  word-break: break-all;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@keyframes jump {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.jump_icon {
+  @apply hover:text-info hover:[animation:jump_0.4s_ease-in-out];
+}
+
+@keyframes highlight-fade-out {
+  from {
+    background-color: hsla(207, 90%, 54%, 0.4);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.highlight-animation {
+  border-radius: 0.5rem;
+  animation: highlight-fade-out 3s ease-out;
+}
+
+.hidden-scrollbar {
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+@keyframes portal-tooltip-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.portal-tooltip {
+  animation: portal-tooltip-fade-in 120ms ease-out;
+}
+
+/* 不要覆写 Tailwind 的 `.hidden` 为 `!important`：会破坏 `hidden lg:flex` 等响应式切换。 */
+
+body.avatar-sampler-active,
+body.avatar-sampler-active * {
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path fill='%23000' d='M20.7 4.6l6.7 6.7-3 3-1.4-1.4-9.6 9.6v4.5h-4.5l9.6-9.6-1.4-1.4 3-3zM7 25h2v2H7z'/></svg>")
+      0 31,
+    crosshair;
+}
+
+@layer utilities {
+  /* Material preview float theme tokens */
+  :where([data-theme=dark]) .tc-mpf {
+    /* soften contrast: closer to chat's dark blue-gray */
+    --tc-mpf-bg: #1c232d;
+    --tc-mpf-surface: #202836;
+    --tc-mpf-surface-2: #293245;
+    --tc-mpf-surface-3: #242d3d;
+    --tc-mpf-toolbar: #1f2735;
+    --tc-mpf-input-bg: #151b24;
+    --tc-mpf-border: #334056;
+    --tc-mpf-border-strong: #3f4f6a;
+    --tc-mpf-text: #e7ebf3;
+    --tc-mpf-muted: #a4adbb;
+    --tc-mpf-crumb: #b8c0cd;
+    --tc-mpf-icon: #b9c2d0;
+    --tc-mpf-icon-hover: #eef2f8;
+    --tc-mpf-accent: #78a6ff;
+    --tc-mpf-danger: #ff6b7a;
+    --tc-mpf-danger-hover: #ff4a5f;
+    --tc-mpf-danger-ring: #a53542;
+    --tc-mpf-selected: #233452;
+    --tc-mpf-dot-border: #41506a;
+    --tc-mpf-dot-folder: #95a2b8;
+    --tc-mpf-dot-file: #78a6ff;
+    --tc-mpf-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
+    --tc-mpf-range-track: rgba(255, 255, 255, 0.20);
+    --tc-mpf-range-thumb: rgba(170, 210, 255, 0.90);
+    --tc-mpf-grip: #7b8699;
+  }
+
+  :where([data-theme=light]) .tc-mpf {
+    /* avoid pure black/white: keep gentle blue-gray tint */
+    --tc-mpf-bg: #f6f8fb;
+    --tc-mpf-surface: #fbfcfe;
+    --tc-mpf-surface-2: #eef2f7;
+    --tc-mpf-surface-3: #e9eff6;
+    --tc-mpf-toolbar: #f1f4f9;
+    --tc-mpf-input-bg: #ffffff;
+    --tc-mpf-border: #d7dee8;
+    --tc-mpf-border-strong: #c8d1de;
+    --tc-mpf-text: #1f2937;
+    --tc-mpf-muted: #6b7280;
+    --tc-mpf-crumb: #6b7280;
+    --tc-mpf-icon: #4b5563;
+    --tc-mpf-icon-hover: #111827;
+    --tc-mpf-accent: #2f6df6;
+    --tc-mpf-danger: #d92d20;
+    --tc-mpf-danger-hover: #b42318;
+    --tc-mpf-danger-ring: #ef4444;
+    --tc-mpf-selected: #e3efff;
+    --tc-mpf-dot-border: #cbd5e1;
+    --tc-mpf-dot-folder: #9ca3af;
+    --tc-mpf-dot-file: #2f6df6;
+    --tc-mpf-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+    --tc-mpf-range-track: rgba(17, 24, 39, 0.16);
+    --tc-mpf-range-thumb: rgba(47, 109, 246, 0.82);
+    --tc-mpf-grip: #94a3b8;
+  }
+
+  /* Embedded in sidebar: blend with app base tokens */
+  .tc-mpf--embedded {
+    /* use sidebar background; keep separations subtle */
+    --tc-mpf-bg: color-mix(in srgb, hsl(var(--b2)) 58%, transparent);
+    --tc-mpf-surface: color-mix(in srgb, hsl(var(--b2)) 42%, transparent);
+    --tc-mpf-surface-2: color-mix(in srgb, hsl(var(--b2)) 34%, transparent);
+    --tc-mpf-surface-3: color-mix(in srgb, hsl(var(--bc)) 5%, transparent);
+    --tc-mpf-toolbar: color-mix(in srgb, hsl(var(--b2)) 40%, transparent);
+    --tc-mpf-input-bg: color-mix(in srgb, hsl(var(--b1)) 92%, transparent);
+    --tc-mpf-border: color-mix(in srgb, hsl(var(--bc)) 12%, transparent);
+    --tc-mpf-border-strong: color-mix(in srgb, hsl(var(--bc)) 16%, transparent);
+    --tc-mpf-text: color-mix(in srgb, hsl(var(--bc)) 92%, transparent);
+    --tc-mpf-muted: color-mix(in srgb, hsl(var(--bc)) 55%, transparent);
+    --tc-mpf-crumb: color-mix(in srgb, hsl(var(--bc)) 60%, transparent);
+    --tc-mpf-icon: color-mix(in srgb, hsl(var(--bc)) 70%, transparent);
+    --tc-mpf-icon-hover: hsl(var(--bc));
+    --tc-mpf-accent: hsl(var(--p));
+    --tc-mpf-dot-file: hsl(var(--p));
+    --tc-mpf-selected: color-mix(in srgb, hsl(var(--bc)) 10%, transparent);
+    --tc-mpf-shadow: none;
+    /* make slider visible in sidebar */
+    --tc-mpf-range-track: color-mix(in srgb, hsl(var(--bc)) 42%, transparent);
+    --tc-mpf-range-thumb: color-mix(in srgb, hsl(var(--p)) 62%, hsl(var(--b1)) 38%);
+    --tc-mpf-grip: color-mix(in srgb, hsl(var(--bc)) 35%, transparent);
+  }
+
+  /* Minimal range slider (material preview footer) */
+  .tc-mpf .tc-min-range {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 20px; /* give the thumb enough hit area */
+    background: transparent;
+    outline: none;
+  }
+
+  .tc-mpf .tc-min-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: var(--tc-mpf-range-track, rgba(127, 134, 150, 0.35));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tc-mpf-border) 55%, transparent);
+  }
+
+  .tc-mpf .tc-min-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 9999px;
+    background: var(--tc-mpf-range-thumb, rgba(176, 214, 255, 0.95));
+    border: 1px solid color-mix(in srgb, var(--tc-mpf-border) 50%, transparent);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--tc-mpf-range-thumb) 24%, transparent),
+      0 2px 8px rgba(0, 0, 0, 0.35);
+    margin-top: -4px; /* center thumb to 4px track */
+  }
+
+  .tc-mpf .tc-min-range:focus-visible::-webkit-slider-thumb {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--tc-mpf-range-thumb) 55%, transparent),
+      0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+
+  .tc-mpf .tc-min-range::-moz-range-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: var(--tc-mpf-range-track, rgba(127, 134, 150, 0.35));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tc-mpf-border) 55%, transparent);
+  }
+
+  .tc-mpf .tc-min-range::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 9999px;
+    background: var(--tc-mpf-range-thumb, rgba(176, 214, 255, 0.95));
+    border: 1px solid color-mix(in srgb, var(--tc-mpf-border) 50%, transparent);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--tc-mpf-range-thumb) 24%, transparent),
+      0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+}
