@@ -33,6 +33,7 @@ import {
   getMyMaterialPackages,
   updateMaterialPackage,
 } from "@/components/materialPackage/materialPackageApi";
+import PortalTooltip from "@/components/common/portalTooltip";
 import { readMockPackages, writeMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import type { MaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
@@ -414,6 +415,22 @@ export default function MaterialPreviewFloat({
       return backendPackageQuery.data ?? null;
     return activeMockPackage;
   }, [activeMockPackage, backendPackageQuery.data, useBackend]);
+
+  const rootPackageName = useMemo(() => {
+    const id = Number(selectedPackageId);
+    const fromList = packages.find(p => Number(p.packageId) === id)?.name ?? null;
+    if (fromList && fromList.trim())
+      return fromList;
+    const fromDetail = materialPackage?.name ?? null;
+    if (fromDetail && fromDetail.trim())
+      return fromDetail;
+    return `素材包#${selectedPackageId}`;
+  }, [materialPackage?.name, packages, selectedPackageId]);
+
+  const fullPathText = useMemo(() => {
+    const rest = folderPath.join(" / ");
+    return rest ? `${rootPackageName} / ${rest}` : rootPackageName;
+  }, [folderPath, rootPackageName]);
 
   const content = materialPackage?.content ?? null;
 
@@ -961,10 +978,73 @@ export default function MaterialPreviewFloat({
           <div
             className="flex items-center gap-2 px-3 flex-1 min-w-0 text-[13px] font-normal text-[color:var(--tc-mpf-text)] bg-[color:var(--tc-mpf-surface)] cursor-move"
           >
-            <PackageIcon className="size-4 opacity-80" weight="bold" />
-            <span className="truncate text-left">
-              {materialPackage?.name ?? `素材包#${selectedPackageId}`}
-            </span>
+            <PackageIcon className="size-4 shrink-0 opacity-80" weight="bold" />
+            <PortalTooltip label={fullPathText} placement="bottom">
+              <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+                <button
+                  type="button"
+                  className="min-w-0 shrink truncate hover:underline"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFolderPath([]);
+                    setSelectedItem(null);
+                  }}
+                  data-mpf-no-drag="1"
+                  title="回到根目录"
+                >
+                  {rootPackageName}
+                </button>
+                {folderPath.length > 0 && (
+                  <span className="shrink-0 opacity-70">/</span>
+                )}
+                {(() => {
+                  if (!folderPath.length) {
+                    return null;
+                  }
+                  const MAX_TAIL = 3;
+                  const tailStart = Math.max(0, folderPath.length - MAX_TAIL);
+                  const hiddenCount = tailStart;
+                  const tail = folderPath.slice(tailStart);
+                  return (
+                    <div className="flex items-center gap-0.5 flex-1 min-w-0 overflow-hidden">
+                      {hiddenCount > 0 && (
+                        <>
+                          <span className="shrink-0 opacity-70">…</span>
+                          <span className="shrink-0 opacity-70">/</span>
+                        </>
+                      )}
+                      {tail.map((name, idx) => {
+                        const originalIndex = tailStart + idx;
+                        const targetPath = folderPath.slice(0, originalIndex + 1);
+                        const isLast = idx === tail.length - 1;
+                        return (
+                          <React.Fragment key={`${originalIndex}:${name}`}>
+                            <button
+                              type="button"
+                              className={isLast
+                                ? "min-w-0 max-w-full overflow-hidden truncate text-left hover:underline"
+                                : "shrink-0 whitespace-nowrap hover:underline"}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setFolderPath(targetPath);
+                                setSelectedItem(null);
+                              }}
+                              data-mpf-no-drag="1"
+                              title={name}
+                            >
+                              {name}
+                            </button>
+                            {!isLast && <span className="shrink-0 opacity-70">/</span>}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            </PortalTooltip>
           </div>
         </div>
         <div className="flex items-center gap-2 pr-2 bg-[color:var(--tc-mpf-surface)]" data-mpf-no-drag="1">
@@ -1046,38 +1126,29 @@ export default function MaterialPreviewFloat({
         </div>
       </div>
 
-      {/* Breadcrumb bar (prototype: crumb) */}
-      <div className="flex items-center justify-between gap-2 h-[30px] px-[10px] border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-3)] text-[12px] text-[color:var(--tc-mpf-crumb)] whitespace-nowrap">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            className="h-5 w-[22px] inline-flex items-center justify-center rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-surface-2)] text-[color:var(--tc-mpf-text)] hover:bg-[color:var(--tc-mpf-surface-3)] active:opacity-90 transition disabled:opacity-40"
-            disabled={!folderPath.length}
-            onClick={() => {
-              setFolderPath(prev => (prev.length ? prev.slice(0, -1) : prev));
-              setSelectedItem(null);
-            }}
-            aria-label="返回上一级"
-            title="返回上一级"
-          >
-            <ChevronDown className="-rotate-90 size-4 opacity-80" />
-          </button>
-          <div className="min-w-0 truncate" title={pathText}>
-            {pathText}
-          </div>
-        </div>
-        <div className="text-[12px] opacity-80">
-          {selectedCount} 项已选择，共 {totalCount} 项
-        </div>
-      </div>
+      {/* Search bar */}
+      <div className="flex items-center gap-2 px-[10px] py-[8px] border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-toolbar)]">
+        <button
+          type="button"
+          className="h-6 w-[26px] inline-flex items-center justify-center rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-surface-2)] text-[color:var(--tc-mpf-text)] hover:bg-[color:var(--tc-mpf-surface-3)] active:opacity-90 transition disabled:opacity-40"
+          disabled={!folderPath.length}
+          onClick={() => {
+            setFolderPath(prev => (prev.length ? prev.slice(0, -1) : prev));
+            setSelectedItem(null);
+          }}
+          aria-label="返回上一级"
+          title="返回上一级"
+          data-mpf-no-drag="1"
+        >
+          <ChevronDown className="-rotate-90 size-4 opacity-80" />
+        </button>
 
-      {/* Toolbar (prototype: toolbar) */}
-      <div className="flex items-center flex-wrap gap-2 px-[10px] py-[8px] border-b border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-toolbar)]">
         <input
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
           placeholder="搜索素材…"
-          className="w-[220px] h-6 rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] placeholder:text-[color:var(--tc-mpf-muted)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+          className="flex-1 min-w-0 h-6 rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] placeholder:text-[color:var(--tc-mpf-muted)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+          data-mpf-no-drag="1"
         />
 
         <select
@@ -1090,20 +1161,15 @@ export default function MaterialPreviewFloat({
             setFolderPath([]);
             setSelectedItem(null);
           }}
-          className="h-6 rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+          className="h-6 w-[140px] max-w-[40%] rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
           aria-label="选择素材包"
           title="选择素材包"
+          data-mpf-no-drag="1"
         >
           {packages.map(p => (
             <option key={p.packageId} value={String(p.packageId)}>{p.name}</option>
           ))}
         </select>
-
-        <div className="flex-1" />
-
-        <div className="text-[11px] opacity-60">
-          {useBackend ? (backendPackageQuery.isLoading ? "加载中…" : backendPackageQuery.isError ? "加载失败" : "") : ""}
-        </div>
       </div>
 
       {/* Assets panel */}
