@@ -68,9 +68,22 @@ interface MaterialPreviewFloatProps {
 }
 
 type SelectedItem = { type: "folder" | "material"; name: string } | null;
+type InlineEditState = {
+  type: "folder" | "material";
+  name: string;
+  field: "name" | "note";
+  value: string;
+} | null;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isInlineClickTarget(target: EventTarget | null) {
+  if (!target)
+    return false;
+  const el = target instanceof Element ? target : (target as any)?.parentElement;
+  return Boolean(el?.closest?.("[data-mpf-inline='1']"));
 }
 
 function getMaterialThumbUrl(node: MaterialNode): string | null {
@@ -422,6 +435,8 @@ export default function MaterialPreviewFloat({
       return { type: "material", name: initialState.selectedMaterialName };
     return null;
   });
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState>(null);
+  const inlineEditRef = useRef<HTMLInputElement | null>(null);
   const [keyword, setKeyword] = useState("");
   const [viewMode, setViewMode] = useState<"icon" | "list">("icon");
   const [thumbSize, setThumbSize] = useState(136);
@@ -436,6 +451,7 @@ export default function MaterialPreviewFloat({
   const [useBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
   const [selectedPackageId, setSelectedPackageId] = useState<number>(() => payload.packageId);
   const lastClickRef = useRef<{ key: string; timeMs: number } | null>(null);
+  const inlineClickRef = useRef<{ key: string; timeMs: number } | null>(null);
 
   const dockZoneSelector = "[data-role='material-package-dock-zone']";
   const buildDockPayload = useCallback((): MaterialPreviewPayload => {
@@ -618,6 +634,9 @@ export default function MaterialPreviewFloat({
     if (!node || node.type !== "material")
       return;
     annoAnchorRef.current = anchor;
+    // Pre-position to the anchor to avoid an initial flash at (0, 0) before layout measurement.
+    const anchorRect = anchor.getBoundingClientRect();
+    setAnnoPos({ left: anchorRect.left, top: anchorRect.bottom + 8 });
     setAnnoTarget({ folderPath: [...folderPath], materialName: node.name, messageCount: node.messages?.length ?? 0 });
     setAnnoDraft(getMaterialAnnotations(node));
     setAnnoApplyAll(true);
@@ -729,6 +748,79 @@ export default function MaterialPreviewFloat({
     return content;
   }, [content, materialPackage]);
 
+  const getMaterialNoteByName = useCallback((materialName: string) => {
+    const nodes = getFolderNodesAtPath(ensureContent(), folderPath);
+    const found = nodes.find(n => n.type === "material" && n.name === materialName) as MaterialItemNode | undefined;
+    return typeof found?.note === "string" ? found.note : "";
+  }, [ensureContent, folderPath]);
+
+  const cancelInlineEdit = useCallback(() => {
+    setInlineEdit(null);
+  }, []);
+
+  const commitInlineRename = useCallback(async (args: { type: "folder" | "material"; from: string; to: string }) => {
+    const from = args.from.trim();
+    const to = args.to.trim();
+    if (!from || !to)
+      return;
+    if (from === to)
+      return;
+
+    if (args.type === "material") {
+      const existingNote = getMaterialNoteByName(from);
+      const next = draftRenameMaterial(ensureContent(), folderPath, from, to, existingNote);
+      setSelectedItem(prev => prev && prev.type === "material" && prev.name === from ? { type: "material", name: to } : prev);
+      await saveContent(next);
+      return;
+    }
+
+    const next = draftRenameFolder(ensureContent(), folderPath, from, to);
+    setSelectedItem(prev => prev && prev.type === "folder" && prev.name === from ? { type: "folder", name: to } : prev);
+    await saveContent(next);
+  }, [ensureContent, folderPath, getMaterialNoteByName, saveContent]);
+
+  const commitInlineNote = useCallback(async (args: { materialName: string; note: string }) => {
+    const name = args.materialName.trim();
+    if (!name)
+      return;
+    const nextNote = args.note.trim();
+    const next = draftRenameMaterial(ensureContent(), folderPath, name, name, nextNote);
+    await saveContent(next);
+  }, [ensureContent, folderPath, saveContent]);
+
+  const detectInlineDoubleClick = useCallback((key: string) => {
+    const nowMs = Date.now();
+    const prev = inlineClickRef.current;
+    inlineClickRef.current = { key, timeMs: nowMs };
+    if (!prev || prev.key !== key || (nowMs - prev.timeMs) > 350)
+      return false;
+    inlineClickRef.current = null;
+    return true;
+  }, []);
+
+  const startInlineRename = useCallback((node: MaterialNode) => {
+    setInlineEdit({ type: node.type, name: node.name, field: "name", value: node.name });
+  }, []);
+
+  const startInlineNoteEdit = useCallback((node: MaterialNode) => {
+    if (node.type !== "material")
+      return;
+    setInlineEdit({ type: "material", name: node.name, field: "note", value: node.note ?? "" });
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        if (!selectedNode || inlineEdit)
+          return;
+        e.preventDefault();
+        startInlineRename(selectedNode);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [inlineEdit, selectedNode, startInlineRename]);
+
   const saveAnnoEditor = useCallback(async () => {
     if (!annoTarget)
       return;
@@ -736,6 +828,16 @@ export default function MaterialPreviewFloat({
     await saveContent(next);
     closeAnnoEditor();
   }, [annoApplyAll, annoDraft, annoTarget, closeAnnoEditor, ensureContent, saveContent]);
+
+  useEffect(() => {
+    if (!inlineEdit)
+      return;
+    const t = window.setTimeout(() => {
+      inlineEditRef.current?.focus();
+      inlineEditRef.current?.select?.();
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [inlineEdit]);
 
   const annoEditorThemeVars = useMpfThemeVars();
 
@@ -1279,6 +1381,11 @@ export default function MaterialPreviewFloat({
           </div>
         </div>
         <div className="flex items-center gap-2 pr-2 bg-[color:var(--tc-mpf-surface)]" data-mpf-no-drag="1">
+          {inlineEdit && (
+            <div className="mr-1 text-[11px] text-[color:var(--tc-mpf-muted)] select-none">
+              编辑中…
+            </div>
+          )}
           <button
             type="button"
             className={iconControlClass}
@@ -1456,6 +1563,10 @@ export default function MaterialPreviewFloat({
                     onClick={(e) => {
                       e.preventDefault();
                       setSelectedItem({ type: node.type, name });
+                      if (isInlineClickTarget(e.target)) {
+                        lastClickRef.current = null;
+                        return;
+                      }
                       const nowMs = Date.now();
                       const prev = lastClickRef.current;
                       lastClickRef.current = { key, timeMs: nowMs };
@@ -1488,42 +1599,159 @@ export default function MaterialPreviewFloat({
                       {!isFolder && !thumbUrl && <FileImageIcon className="size-10 opacity-70" />}
                     </div>
                     <div className="p-2">
-                      <div className="text-[12px] font-semibold text-[color:var(--tc-mpf-text)] truncate" title={name}>{name}</div>
+                      {inlineEdit && inlineEdit.field === "name" && inlineEdit.type === node.type && inlineEdit.name === name
+                        ? (
+                            <div data-mpf-inline="1">
+                              <input
+                                ref={inlineEditRef}
+                                value={inlineEdit.value}
+                                onChange={e => setInlineEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    cancelInlineEdit();
+                                  }
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    const from = inlineEdit.name;
+                                    const to = inlineEdit.value;
+                                    cancelInlineEdit();
+                                    void commitInlineRename({ type: node.type, from, to });
+                                  }
+                                }}
+                                onBlur={() => {
+                                  const from = inlineEdit.name;
+                                  const to = inlineEdit.value;
+                                  cancelInlineEdit();
+                                  void commitInlineRename({ type: node.type, from, to });
+                                }}
+                                className="w-full h-7 rounded-none border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] font-semibold text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+                          )
+                        : (
+                            <div
+                              data-mpf-inline="1"
+                              className="text-[12px] font-semibold text-[color:var(--tc-mpf-text)] truncate"
+                              title={name}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setSelectedItem({ type: node.type, name });
+                                if (inlineEdit)
+                                  return;
+                                if (node.type !== "material")
+                                  return;
+                                if (!detectInlineDoubleClick(`name:${node.type}:${name}`))
+                                  return;
+                                startInlineRename(node);
+                              }}
+                              onDoubleClick={(e) => {
+                                e.preventDefault();
+                                startInlineRename(node);
+                              }}
+                            >
+                              {name}
+                            </div>
+                          )}
                       {isFolder ? (
                         <div className="text-[11px] text-[color:var(--tc-mpf-muted)] mt-1 truncate" title={subtitle}>
                           {subtitle}
                         </div>
                       ) : (
-                        <div
-                          className="mt-1 flex flex-wrap gap-1 min-h-[18px]"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            openAnnoEditor(e.currentTarget as HTMLElement, node);
-                          }}
-                          title="点击编辑标签"
-                        >
-                          {displayChips.map(tag => (
-                            <span
-                              key={tag}
-                              className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-text)] opacity-95"
-                              title={tag}
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                          {moreCount > 0 && (
-                            <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]" title={annotations.join(" / ")}>
-                              +{moreCount}
-                            </span>
-                          )}
-                          {annotations.length === 0 && (
-                            <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]">
-                              {getNodeBaseType(node)}
-                            </span>
-                          )}
-                        </div>
+                        <>
+                          <div
+                            className="mt-1 flex flex-wrap gap-1 min-h-[18px]"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openAnnoEditor(e.currentTarget as HTMLElement, node);
+                            }}
+                            title="点击编辑标签"
+                          >
+                            {displayChips.map(tag => (
+                              <span
+                                key={tag}
+                                className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-text)] opacity-95"
+                                title={tag}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {moreCount > 0 && (
+                              <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]" title={annotations.join(" / ")}>
+                                +{moreCount}
+                              </span>
+                            )}
+                            {annotations.length === 0 && (
+                              <span className="inline-flex items-center rounded-sm border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-surface-2)] px-1.5 py-[1px] text-[11px] text-[color:var(--tc-mpf-muted)]">
+                                {getNodeBaseType(node)}
+                              </span>
+                            )}
+                          </div>
+
+                          {inlineEdit && inlineEdit.field === "note" && inlineEdit.type === "material" && inlineEdit.name === name
+                            ? (
+                                <div className="mt-1" data-mpf-inline="1">
+                                  <input
+                                    ref={inlineEditRef}
+                                    value={inlineEdit.value}
+                                    onChange={e => setInlineEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        cancelInlineEdit();
+                                      }
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        const materialName = inlineEdit.name;
+                                        const note = inlineEdit.value;
+                                        cancelInlineEdit();
+                                        void commitInlineNote({ materialName, note });
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      const materialName = inlineEdit.name;
+                                      const note = inlineEdit.value;
+                                      cancelInlineEdit();
+                                      void commitInlineNote({ materialName, note });
+                                    }}
+                                    className="w-full h-7 rounded-none border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[11px] text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+                                    placeholder="添加备注…"
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                </div>
+                              )
+                            : (
+                                <div
+                                  data-mpf-inline="1"
+                                  className="mt-1 text-[11px] text-[color:var(--tc-mpf-muted)] truncate"
+                                  title={(node.note ?? "").trim()}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setSelectedItem({ type: node.type, name });
+                                    if (inlineEdit)
+                                      return;
+                                    if (node.type !== "material")
+                                      return;
+                                    if (!detectInlineDoubleClick(`note:${name}`))
+                                      return;
+                                    startInlineNoteEdit(node);
+                                  }}
+                                  onDoubleClick={(e) => {
+                                    e.preventDefault();
+                                    startInlineNoteEdit(node);
+                                  }}
+                                >
+                                  {(node.note ?? "").trim() ? (node.note ?? "").trim() : "（无备注）"}
+                                </div>
+                              )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -1560,6 +1788,10 @@ export default function MaterialPreviewFloat({
                       onClick={(e) => {
                         e.preventDefault();
                         setSelectedItem({ type: node.type, name });
+                        if (isInlineClickTarget(e.target)) {
+                          lastClickRef.current = null;
+                          return;
+                        }
                         const nowMs = Date.now();
                         const prev = lastClickRef.current;
                         lastClickRef.current = { key, timeMs: nowMs };
@@ -1600,7 +1832,63 @@ export default function MaterialPreviewFloat({
                           <span className={`inline-block size-2 rounded-none border border-[color:var(--tc-mpf-dot-border)] shrink-0 ${isFolder ? "bg-[color:var(--tc-mpf-dot-folder)]" : "bg-[color:var(--tc-mpf-dot-file)]"}`} />
                         )}
                         <div className="min-w-0">
-                          <div className="truncate text-[color:var(--tc-mpf-text)] font-medium">{name}</div>
+                          {inlineEdit && inlineEdit.field === "name" && inlineEdit.type === node.type && inlineEdit.name === name
+                            ? (
+                                <div data-mpf-inline="1">
+                                  <input
+                                    ref={inlineEditRef}
+                                    value={inlineEdit.value}
+                                    onChange={e => setInlineEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        cancelInlineEdit();
+                                      }
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        const from = inlineEdit.name;
+                                        const to = inlineEdit.value;
+                                        cancelInlineEdit();
+                                        void commitInlineRename({ type: node.type, from, to });
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      const from = inlineEdit.name;
+                                      const to = inlineEdit.value;
+                                      cancelInlineEdit();
+                                      void commitInlineRename({ type: node.type, from, to });
+                                    }}
+                                    className="w-full h-7 rounded-none border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] font-medium text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                </div>
+                              )
+                            : (
+                                <div
+                                  data-mpf-inline="1"
+                                  className="truncate text-[color:var(--tc-mpf-text)] font-medium"
+                                  title={name}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setSelectedItem({ type: node.type, name });
+                                    if (inlineEdit)
+                                      return;
+                                    if (node.type !== "material")
+                                      return;
+                                    if (!detectInlineDoubleClick(`name:${node.type}:${name}`))
+                                      return;
+                                    startInlineRename(node);
+                                  }}
+                                  onDoubleClick={(e) => {
+                                    e.preventDefault();
+                                    startInlineRename(node);
+                                  }}
+                                >
+                                  {name}
+                                </div>
+                              )}
                           {!compactList && (
                             <div
                               className="mt-0.5 flex flex-wrap gap-1 min-h-[18px]"
@@ -1643,7 +1931,68 @@ export default function MaterialPreviewFloat({
                         </div>
                       </div>
                       {!compactList && (
-                        <div className="truncate text-[color:var(--tc-mpf-muted)]">{isFolder ? "" : (node.note ?? "")}</div>
+                        <div
+                          className="truncate text-[color:var(--tc-mpf-muted)]"
+                          data-mpf-inline={isFolder ? undefined : "1"}
+                          title={isFolder ? "" : ((node.note ?? "").trim())}
+                          onClick={(e) => {
+                            if (isFolder)
+                              return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setSelectedItem({ type: node.type, name });
+                            if (inlineEdit)
+                              return;
+                            if (node.type !== "material")
+                              return;
+                            if (!detectInlineDoubleClick(`note:${name}`))
+                              return;
+                            startInlineNoteEdit(node);
+                          }}
+                          onDoubleClick={(e) => {
+                            if (isFolder)
+                              return;
+                            e.preventDefault();
+                            startInlineNoteEdit(node);
+                          }}
+                        >
+                          {isFolder
+                            ? ""
+                            : (
+                                inlineEdit && inlineEdit.field === "note" && inlineEdit.type === "material" && inlineEdit.name === name
+                                  ? (
+                                      <input
+                                        ref={inlineEditRef}
+                                        value={inlineEdit.value}
+                                        onChange={e => setInlineEdit(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Escape") {
+                                            e.preventDefault();
+                                            cancelInlineEdit();
+                                          }
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            const materialName = inlineEdit.name;
+                                            const note = inlineEdit.value;
+                                            cancelInlineEdit();
+                                            void commitInlineNote({ materialName, note });
+                                          }
+                                        }}
+                                        onBlur={() => {
+                                          const materialName = inlineEdit.name;
+                                          const note = inlineEdit.value;
+                                          cancelInlineEdit();
+                                          void commitInlineNote({ materialName, note });
+                                        }}
+                                        className="w-full h-7 rounded-none border border-[color:var(--tc-mpf-border)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
+                                        placeholder="添加备注…"
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => e.stopPropagation()}
+                                      />
+                                    )
+                                  : ((node.note ?? "").trim() ? (node.note ?? "").trim() : "（无备注）")
+                              )}
+                        </div>
                       )}
                       <div className="text-right text-[color:var(--tc-mpf-muted)]">{baseType}</div>
                     </div>

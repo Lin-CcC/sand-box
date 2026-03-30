@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>素材包 - 备注（Notes）交互方案 Mock</title>
+    <style>
+      :root {
+        --bg: #0f141c;
+        --surface: #161d28;
+        --surface-2: #1c2432;
+        --surface-3: #202b3c;
+        --toolbar: #151c27;
+        --border: rgba(110, 130, 160, 0.35);
+        --border-strong: rgba(120, 145, 180, 0.55);
+        --text: rgba(230, 236, 246, 0.96);
+        --muted: rgba(170, 181, 196, 0.85);
+        --muted-2: rgba(170, 181, 196, 0.60);
+        --accent: rgba(120, 166, 255, 0.92);
+        --danger: rgba(255, 107, 122, 0.92);
+        --shadow: 0 18px 40px rgba(0, 0, 0, 0.34);
+        --chip-bg: rgba(35, 52, 82, 0.65);
+        --selected: rgba(35, 52, 82, 0.9);
+      }
+      html[data-theme="light"] {
+        --bg: #e8eef7;
+        --surface: #f2f5fa;
+        --surface-2: #e4ebf5;
+        --surface-3: #dbe4f1;
+        --toolbar: #eef2f8;
+        --border: rgba(70, 90, 120, 0.30);
+        --border-strong: rgba(70, 90, 120, 0.44);
+        --text: rgba(30, 38, 51, 0.96);
+        --muted: rgba(70, 80, 100, 0.80);
+        --muted-2: rgba(70, 80, 100, 0.58);
+        --accent: rgba(47, 110, 234, 0.95);
+        --danger: rgba(214, 69, 83, 0.92);
+        --shadow: 0 18px 40px rgba(13, 22, 35, 0.16);
+        --chip-bg: rgba(215, 229, 255, 0.85);
+        --selected: rgba(215, 229, 255, 0.85);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        height: 100vh;
+        background: radial-gradient(1200px 800px at 25% 15%, rgba(120, 166, 255, 0.12), transparent 55%),
+                    radial-gradient(1200px 800px at 75% 45%, rgba(255, 107, 122, 0.08), transparent 55%),
+                    var(--bg);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+
+      .app {
+        height: 100%;
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 0;
+      }
+
+      .sidebar {
+        background: linear-gradient(180deg, var(--surface), var(--toolbar));
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .side-head {
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--surface-2), var(--toolbar));
+      }
+      .title { font-weight: 650; letter-spacing: 0.2px; }
+      .tiny { font-size: 12px; color: var(--muted); }
+
+      .side-body {
+        padding: 10px 10px 12px;
+        overflow: auto;
+      }
+
+      .tree {
+        border: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .tree-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 10px;
+        border-top: 1px solid var(--border);
+        cursor: default;
+      }
+      .tree-row:first-child { border-top: 0; }
+      .tree-row .dot { width: 10px; height: 10px; border: 1px solid var(--border-strong); background: var(--chip-bg); }
+      .tree-row .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .tree-row.active { background: var(--selected); }
+      .tree-row:hover { background: var(--surface-2); }
+
+      .main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .toolbar {
+        height: 48px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--surface-2), var(--toolbar));
+      }
+
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .seg {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        height: 30px;
+      }
+      .seg button {
+        height: 28px;
+        padding: 0 10px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        border-right: 1px solid var(--border);
+      }
+      .seg button:last-child { border-right: 0; }
+      .seg button.active { color: var(--text); background: var(--surface-2); }
+      .seg button:hover { background: var(--surface-2); }
+
+      .search {
+        height: 30px;
+        min-width: 200px;
+        flex: 1;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        outline: none;
+      }
+      .search::placeholder { color: var(--muted-2); }
+
+      .right-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .btn {
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .btn:hover { background: var(--surface-2); }
+      .btn:active { opacity: 0.92; }
+
+      .content {
+        min-height: 0;
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      /* Option B: Details panel */
+      .content.with-details { grid-template-columns: 1fr 300px; }
+      .details {
+        border-left: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--surface), var(--toolbar));
+        padding: 10px;
+      }
+      .details-card {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        padding: 10px;
+      }
+      .field {
+        display: grid;
+        grid-template-columns: 64px 1fr;
+        gap: 8px;
+        align-items: start;
+        margin-top: 8px;
+      }
+      .field label {
+        color: var(--muted);
+        font-size: 12px;
+        padding-top: 6px;
+      }
+      .note-input {
+        width: 100%;
+        min-height: 72px;
+        resize: vertical;
+        border: 1px solid var(--border-strong);
+        background: var(--surface-2);
+        color: var(--text);
+        padding: 8px;
+        outline: none;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .note-input::placeholder { color: var(--muted-2); }
+
+      /* Icon view */
+      .grid {
+        padding: 14px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+        gap: 12px;
+        align-content: start;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        overflow: hidden;
+        cursor: default;
+      }
+      .card.selected { border-color: rgba(120, 166, 255, 0.65); box-shadow: 0 0 0 1px rgba(120,166,255,0.35) inset; }
+      .thumb {
+        position: relative;
+        height: 92px;
+        overflow: hidden;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--surface-2), var(--surface));
+      }
+      .thumb img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        opacity: 0.96;
+      }
+      .thumb .shade {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(0,0,0,0.12), rgba(0,0,0,0.0) 55%, rgba(0,0,0,0.10));
+        pointer-events: none;
+      }
+      .meta { padding: 10px; }
+      .name {
+        font-size: 12px;
+        font-weight: 650;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .subline {
+        margin-top: 6px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-height: 18px;
+      }
+      .chip {
+        border: 1px solid var(--border);
+        background: var(--chip-bg);
+        color: var(--text);
+        font-size: 11px;
+        padding: 1px 6px;
+      }
+      .note {
+        display: block;
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .note.editing { outline: 1px solid rgba(120,166,255,0.55); background: rgba(120,166,255,0.08); }
+      .note input {
+        width: 100%;
+        border: 1px solid var(--border-strong);
+        background: var(--surface-2);
+        color: var(--text);
+        padding: 2px 6px;
+        font-size: 11px;
+        outline: none;
+      }
+
+      /* List view */
+      .list {
+        border-top: 1px solid var(--border);
+        border-left: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+        margin: 14px;
+        background: var(--surface);
+      }
+      .list-head, .list-row {
+        display: grid;
+        grid-template-columns: minmax(260px, 1fr) minmax(180px, 360px) 92px;
+        gap: 10px;
+        padding: 9px 10px;
+        align-items: center;
+      }
+      .list-head {
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-2);
+        font-size: 11px;
+        font-weight: 650;
+        color: var(--muted);
+      }
+      .list-row {
+        border-bottom: 1px solid var(--border);
+        cursor: default;
+      }
+      .list-row:hover { background: var(--surface-2); }
+      .list-row.selected { background: var(--selected); }
+      .cell-truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .cell-note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .cell-note.editing { outline: 1px solid rgba(120,166,255,0.55); background: rgba(120,166,255,0.08); }
+      .cell-note input {
+        width: 100%;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        padding: 4px 8px;
+        font-size: 12px;
+        outline: none;
+      }
+      .type { text-align: right; color: var(--muted); font-size: 12px; }
+
+      /* Option C: bottom quick editor */
+      .quick {
+        height: 42px;
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        border-top: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--toolbar), var(--surface-2));
+      }
+      .quick.on { display: flex; }
+      .quick label { font-size: 12px; color: var(--muted); }
+      .quick input {
+        flex: 1;
+        height: 28px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        color: var(--text);
+        padding: 0 10px;
+        outline: none;
+        font-size: 12px;
+      }
+      .quick input::placeholder { color: var(--muted-2); }
+      .kbd {
+        font-size: 11px;
+        color: var(--muted-2);
+        border: 1px solid var(--border);
+        background: rgba(0,0,0,0.10);
+        padding: 2px 6px;
+      }
+
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        margin-left: 12px;
+      }
+      .hint strong { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="side-head">
+          <div class="title">素材箱示例</div>
+          <div class="tiny" id="themeLabel">dark</div>
+        </div>
+        <div class="side-body">
+          <div class="tree">
+            <div class="tree-row active" data-path="素材箱示例"><span class="dot"></span><span class="name">素材箱示例</span></div>
+            <div class="tree-row" data-path="素材箱示例/场景" style="padding-left: 22px;"><span class="dot"></span><span class="name">场景</span></div>
+            <div class="tree-row" data-path="素材箱示例/音乐" style="padding-left: 22px;"><span class="dot"></span><span class="name">音乐</span></div>
+            <div class="tree-row" data-path="素材箱示例/文本" style="padding-left: 22px;"><span class="dot"></span><span class="name">文本</span></div>
+          </div>
+          <div class="hint" style="margin-top: 10px;">
+            目标：给每个子项增加<strong>备注</strong>，但不为每行新增按钮。
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="toolbar">
+          <div class="controls">
+            <div class="seg" title="视图模式">
+              <button id="viewIcon" class="active">图形</button>
+              <button id="viewList">列表</button>
+            </div>
+            <input class="search" placeholder="搜索素材…" />
+            <div class="seg" title="备注编辑方案">
+              <button id="optA" class="active">方案A：就地编辑</button>
+              <button id="optB">方案B：右侧详情</button>
+              <button id="optC">方案C：底部快捷</button>
+            </div>
+          </div>
+          <div class="right-controls">
+            <button id="toggleTheme" class="btn" title="切换亮/暗">切主题</button>
+            <button class="btn" title="说明">说明</button>
+          </div>
+        </div>
+
+        <section id="content" class="content">
+          <!-- Icon view -->
+          <div id="grid" class="grid">
+            <div class="card selected" data-id="ex1">
+              <div class="thumb">
+                <img alt="ex1" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='360'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%235d7cff' stop-opacity='0.9'/%3E%3Cstop offset='1' stop-color='%23ff6b7a' stop-opacity='0.8'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='640' height='360' fill='url(%23g)'/%3E%3Ctext x='28' y='70' font-family='Segoe UI, Arial' font-size='38' fill='rgba(255,255,255,0.90)'%3EPreview%3C/text%3E%3Ctext x='28' y='112' font-family='Segoe UI, Arial' font-size='18' fill='rgba(255,255,255,0.75)'%3Ethumb only in fixed area%3C/text%3E%3C/svg%3E" />
+                <div class="shade"></div>
+              </div>
+              <div class="meta">
+                <div class="name" title="ex1 tg 11f.png">ex1 tg 11f.png</div>
+                <div class="subline">
+                  <span class="chip">背景</span>
+                </div>
+                <div class="note" data-note="开场背景：温馨小屋，黄昏光线">开场背景：温馨小屋，黄昏光线</div>
+              </div>
+            </div>
+
+            <div class="card" data-id="bgm">
+              <div class="thumb"></div>
+              <div class="meta">
+                <div class="name" title="阴森BGM">阴森BGM</div>
+                <div class="subline"><span class="chip">BGM</span></div>
+                <div class="note" data-note="">（无备注）</div>
+              </div>
+            </div>
+
+            <div class="card" data-id="folder1">
+              <div class="thumb"></div>
+              <div class="meta">
+                <div class="name" title="场景">场景</div>
+                <div class="subline"><span class="chip">文件夹</span></div>
+                <div class="note" data-note="共 12 项">共 12 项</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- List view -->
+          <div id="list" style="display:none;">
+            <div class="list">
+              <div class="list-head">
+                <div>名称</div>
+                <div>备注</div>
+                <div class="type">类型</div>
+              </div>
+              <div class="list-row selected" data-id="ex1">
+                <div class="cell-truncate">ex1 tg 11f.png</div>
+                <div class="cell-note cell-truncate" data-note="开场背景：温馨小屋，黄昏光线">开场背景：温馨小屋，黄昏光线</div>
+                <div class="type">素材</div>
+              </div>
+              <div class="list-row" data-id="bgm">
+                <div class="cell-truncate">阴森BGM</div>
+                <div class="cell-note cell-truncate" data-note="">（无备注）</div>
+                <div class="type">素材</div>
+              </div>
+              <div class="list-row" data-id="folder1">
+                <div class="cell-truncate">场景</div>
+                <div class="cell-note cell-truncate" data-note="共 12 项">共 12 项</div>
+                <div class="type">文件夹</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div id="quick" class="quick">
+          <label>备注</label>
+          <input id="quickInput" placeholder="为当前选中项添加备注…（Enter 保存 / Esc 取消）" />
+          <span class="kbd">Enter</span>
+          <span class="kbd">Esc</span>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const state = {
+        view: "icon", // icon | list
+        option: "A",  // A | B | C
+        selectedId: "ex1",
+        notes: {
+          ex1: "开场背景：温馨小屋，黄昏光线",
+          bgm: "",
+          folder1: "共 12 项",
+        },
+      };
+
+      function setTheme(next) {
+        document.documentElement.dataset.theme = next;
+        $("themeLabel").textContent = next;
+      }
+
+      function refreshNotes() {
+        document.querySelectorAll(".card").forEach(card => {
+          const id = card.dataset.id;
+          const noteEl = card.querySelector(".note");
+          if (!noteEl) return;
+          const v = state.notes[id] ?? "";
+          noteEl.dataset.note = v;
+          noteEl.textContent = v ? v : "（无备注）";
+        });
+        document.querySelectorAll(".list-row").forEach(row => {
+          const id = row.dataset.id;
+          const noteEl = row.querySelector(".cell-note");
+          if (!noteEl) return;
+          const v = state.notes[id] ?? "";
+          noteEl.dataset.note = v;
+          noteEl.textContent = v ? v : "（无备注）";
+          noteEl.title = v;
+        });
+      }
+
+      function setSelected(id) {
+        state.selectedId = id;
+        document.querySelectorAll(".card").forEach(card => {
+          card.classList.toggle("selected", card.dataset.id === id);
+        });
+        document.querySelectorAll(".list-row").forEach(row => {
+          row.classList.toggle("selected", row.dataset.id === id);
+        });
+        if (state.option === "C") {
+          $("quickInput").value = state.notes[id] ?? "";
+        }
+        if (state.option === "B") {
+          const name = document.querySelector(`[data-id="${id}"] .name, [data-id="${id}"] .cell-truncate`)?.textContent ?? "";
+          const note = state.notes[id] ?? "";
+          document.querySelector("#detailName").textContent = name;
+          document.querySelector("#detailNote").value = note;
+        }
+      }
+
+      function setView(next) {
+        state.view = next;
+        $("viewIcon").classList.toggle("active", next === "icon");
+        $("viewList").classList.toggle("active", next === "list");
+        $("grid").style.display = next === "icon" ? "" : "none";
+        $("list").style.display = next === "list" ? "" : "none";
+      }
+
+      function setOption(next) {
+        state.option = next;
+        $("optA").classList.toggle("active", next === "A");
+        $("optB").classList.toggle("active", next === "B");
+        $("optC").classList.toggle("active", next === "C");
+
+        const content = $("content");
+        const quick = $("quick");
+        // reset details panel
+        content.classList.remove("with-details");
+        const existing = document.querySelector(".details");
+        if (existing) existing.remove();
+        quick.classList.toggle("on", next === "C");
+
+        if (next === "B") {
+          content.classList.add("with-details");
+          const panel = document.createElement("aside");
+          panel.className = "details";
+          panel.innerHTML = `
+            <div class="details-card">
+              <div class="title" style="font-size:13px;">详情</div>
+              <div class="tiny" style="margin-top:6px;" id="detailName"></div>
+              <div class="field">
+                <label>备注</label>
+                <textarea id="detailNote" class="note-input" placeholder="给选中项添加备注（自动保存）…"></textarea>
+              </div>
+              <div class="tiny" style="margin-top:8px;">
+                不为每个子项增加按钮：在<strong>统一位置</strong>编辑备注。
+              </div>
+            </div>
+          `;
+          content.appendChild(panel);
+          // wire up textarea
+          panel.querySelector("#detailNote").addEventListener("input", (e) => {
+            state.notes[state.selectedId] = e.target.value;
+            refreshNotes();
+          });
+          setSelected(state.selectedId);
+        }
+      }
+
+      function startInlineEdit(el, id, initial) {
+        const isCardNote = el.classList.contains("note");
+        const wrapClass = isCardNote ? "note editing" : "cell-note editing";
+        el.className = wrapClass + (isCardNote ? "" : " cell-truncate");
+        const input = document.createElement("input");
+        input.value = initial || "";
+        input.placeholder = "添加备注…";
+        el.textContent = "";
+        el.appendChild(input);
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        const finish = (apply) => {
+          const v = apply ? input.value.trim() : initial;
+          state.notes[id] = v || "";
+          refreshNotes();
+          el.classList.remove("editing");
+        };
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); finish(true); }
+          if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        });
+        input.addEventListener("blur", () => finish(true));
+      }
+
+      // click selection
+      document.querySelectorAll(".card").forEach(card => {
+        card.addEventListener("click", () => setSelected(card.dataset.id));
+        card.querySelector(".note")?.addEventListener("dblclick", (e) => {
+          if (state.option !== "A") return;
+          e.stopPropagation();
+          const id = card.dataset.id;
+          const el = e.currentTarget;
+          startInlineEdit(el, id, state.notes[id] ?? "");
+        });
+      });
+
+      document.querySelectorAll(".list-row").forEach(row => {
+        row.addEventListener("click", () => setSelected(row.dataset.id));
+        row.querySelector(".cell-note")?.addEventListener("dblclick", (e) => {
+          if (state.option !== "A") return;
+          e.stopPropagation();
+          const id = row.dataset.id;
+          const el = e.currentTarget;
+          startInlineEdit(el, id, state.notes[id] ?? "");
+        });
+      });
+
+      // top controls
+      $("viewIcon").addEventListener("click", () => setView("icon"));
+      $("viewList").addEventListener("click", () => setView("list"));
+      $("optA").addEventListener("click", () => setOption("A"));
+      $("optB").addEventListener("click", () => setOption("B"));
+      $("optC").addEventListener("click", () => setOption("C"));
+
+      $("toggleTheme").addEventListener("click", () => {
+        const cur = document.documentElement.dataset.theme || "dark";
+        setTheme(cur === "dark" ? "light" : "dark");
+      });
+
+      // quick editor (option C)
+      $("quickInput").addEventListener("keydown", (e) => {
+        if (state.option !== "C") return;
+        if (e.key === "Enter") {
+          state.notes[state.selectedId] = e.target.value.trim();
+          refreshNotes();
+        }
+        if (e.key === "Escape") {
+          e.target.value = state.notes[state.selectedId] ?? "";
+        }
+      });
+      $("quickInput").addEventListener("blur", (e) => {
+        if (state.option !== "C") return;
+        state.notes[state.selectedId] = e.target.value.trim();
+        refreshNotes();
+      });
+
+      // init
+      setTheme("dark");
+      setView("icon");
+      setOption("A");
+      refreshNotes();
+      setSelected("ex1");
+    </script>
+  </body>
+</html>
+
