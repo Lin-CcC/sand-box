@@ -1,8 +1,13 @@
 export const MATERIAL_PREVIEW_DRAG_TYPE = "application/x-tc-material-preview";
 export const MATERIAL_PREVIEW_DRAG_ORIGIN_TYPE = "application/x-tc-material-preview-origin";
 
+export type MaterialPackageScope = "global" | "space";
+
 export type MaterialPreviewPayload = {
+  /** scope 缺省表示局外（global），兼容旧数据 */
+  scope?: MaterialPackageScope;
   kind: "package" | "folder" | "material";
+  /** 对 global：packageId；对 space：spacePackageId */
   packageId: number;
   label: string;
   path: string[];
@@ -83,7 +88,9 @@ export function getMaterialPreviewDragData(dataTransfer: DataTransfer | null): M
     if (typeof parsed.label !== "string" || !parsed.label.trim())
       return null;
     const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
+    const scope = parsed.scope === "space" || parsed.scope === "global" ? parsed.scope : undefined;
     return {
+      ...(scope ? { scope } : {}),
       kind: parsed.kind,
       packageId: parsed.packageId,
       label: parsed.label,
@@ -110,7 +117,9 @@ export function getMaterialPreviewDragData(dataTransfer: DataTransfer | null): M
     if (typeof parsed.label !== "string" || !parsed.label.trim())
       return null;
     const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
+    const scope = parsed.scope === "space" || parsed.scope === "global" ? parsed.scope : undefined;
     return {
+      ...(scope ? { scope } : {}),
       kind: parsed.kind,
       packageId: parsed.packageId,
       label: parsed.label,

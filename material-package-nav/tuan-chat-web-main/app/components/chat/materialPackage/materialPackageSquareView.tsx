@@ -15,6 +15,9 @@ interface MaterialPackageSquareViewProps {
   activeSpaceId: number | null;
   spaces?: Array<{ spaceId?: number | null; name?: string | null; description?: string | null }>;
   onSelectSpace?: (spaceId: number) => void;
+  /** 若指定，则导入时不再弹“选择空间”而直接导入到该 spaceId */
+  forcedImportSpaceId?: number | null;
+  onImportedToSpace?: (payload: { spaceId: number; packageId: number }) => void;
 }
 
 function normalizeText(value?: string) {
@@ -31,7 +34,7 @@ function toPackages(value: unknown): MaterialPackageRecord[] {
   return value.filter(Boolean) as MaterialPackageRecord[];
 }
 
-export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace, spaces }: MaterialPackageSquareViewProps) {
+export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace, spaces, forcedImportSpaceId, onImportedToSpace }: MaterialPackageSquareViewProps) {
   const screenSize = useScreenSize();
   const isMobile = screenSize === "sm";
 
@@ -101,6 +104,7 @@ export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace
   const runImport = useCallback(async (args: { packageId: number; spaceId: number }) => {
     if (!useBackend) {
       toast.success("mock：已模拟导入到局内（不写入后端）。");
+      onImportedToSpace?.({ spaceId: args.spaceId, packageId: args.packageId });
       closePickSpace();
       return;
     }
@@ -108,6 +112,7 @@ export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace
     try {
       await importMaterialPackageToSpace(args.packageId, { spaceId: args.spaceId });
       toast.success("已导入到当前局内（Space）。");
+      onImportedToSpace?.({ spaceId: args.spaceId, packageId: args.packageId });
       closePickSpace();
     }
     catch (error) {
@@ -117,11 +122,17 @@ export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace
     finally {
       setIsImporting(false);
     }
-  }, [closePickSpace, useBackend]);
+  }, [closePickSpace, onImportedToSpace, useBackend]);
 
   const handleImport = useCallback(async () => {
     if (!isValidId(selectedPackageId))
       return;
+
+    if (isValidId(forcedImportSpaceId)) {
+      setPendingImportPackageId(selectedPackageId);
+      void runImport({ packageId: selectedPackageId, spaceId: forcedImportSpaceId });
+      return;
+    }
 
     const available = Array.isArray(spaces) ? spaces.filter(s => isValidId(s?.spaceId)) : [];
     if (!available.length) {
@@ -131,7 +142,7 @@ export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace
 
     setPendingImportPackageId(selectedPackageId);
     setIsPickSpaceOpen(true);
-  }, [runImport, selectedPackageId, spaces, useBackend]);
+  }, [forcedImportSpaceId, runImport, selectedPackageId, spaces, useBackend]);
 
   const closeDetail = useCallback(() => {
     setSelectedPackageId(null);
