@@ -8,7 +8,7 @@ import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/m
 
 import { ArrowClockwise, CrosshairSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { createMaterialPackage, deleteMaterialPackage, getMyMaterialPackages, updateMaterialPackage } from "@/components/materialPackage/materialPackageApi";
@@ -21,7 +21,7 @@ import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey } fr
 import type { SelectedExplorerNode } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { autoRenameVsCodeLike, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
-import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
+import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
 import {
   isMaterialPreviewDrag,
@@ -250,7 +250,7 @@ export default function MaterialPackageNavPanel({
     setCollapsedByKey(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
-  const lastClickRef = useRef<{ key: string; timeMs: number } | null>(null);
+  const lastClickRef = useRef<{ key: string; action: "open" | "rename"; timeMs: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const treeItemsRef = useRef<HTMLDivElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -262,6 +262,35 @@ export default function MaterialPackageNavPanel({
     files: File[];
   } | null>(null);
   const [pendingDeleteDialog, setPendingDeleteDialog] = useState<PendingDeleteDialog | null>(null);
+  const [inlineRename, setInlineRename] = useState<
+    | null
+    | {
+      kind: "package" | "folder" | "material";
+      key: string;
+      packageId: number;
+      folderPath: string[];
+      fromName: string;
+      draft: string;
+      saving: boolean;
+    }
+  >(null);
+  const inlineRenameInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineRenameMeasureRef = useRef<HTMLSpanElement | null>(null);
+  const [inlineRenameWidthPx, setInlineRenameWidthPx] = useState<number>(0);
+  useLayoutEffect(() => {
+    if (!inlineRename) {
+      setInlineRenameWidthPx(0);
+      return;
+    }
+
+    const el = inlineRenameMeasureRef.current;
+    if (!el)
+      return;
+
+    const measured = Math.ceil(el.getBoundingClientRect().width);
+    const next = Math.max(24, measured + 2);
+    setInlineRenameWidthPx(prev => (prev === next ? prev : next));
+  }, [inlineRename?.draft, inlineRename?.key]);
 
   const [visibilityEditor, setVisibilityEditor] = useState<{
     packageId: number;
@@ -489,7 +518,7 @@ export default function MaterialPackageNavPanel({
     queryClient.setQueryData(listQueryKey, nextList);
     queryClient.setQueryData(detailKey, nextRecord);
     return nextRecord;
-  }, [findPackageById, listQueryKey, queryClient, saveMockRecord, useBackend]);
+  }, [findPackageById, listQueryKey, queryClient, useBackend]);
 
   const ensureRevealNode = useCallback((payload: MaterialPreviewPayload) => {
     const packageId = Number(payload.packageId ?? 0);
@@ -528,6 +557,161 @@ export default function MaterialPackageNavPanel({
       });
     });
   }, []);
+
+  const closeInlineRename = useCallback(() => {
+    setInlineRename(null);
+  }, []);
+
+  useEffect(() => {
+    if (!inlineRename)
+      return;
+    const t = window.setTimeout(() => {
+      try {
+        inlineRenameInputRef.current?.focus?.();
+        inlineRenameInputRef.current?.select?.();
+      }
+      catch {
+        // ignore focus errors
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [inlineRename]);
+
+  const startInlineRename = useCallback((args: {
+    kind: "package" | "folder" | "material";
+    key: string;
+    packageId: number;
+    folderPath: string[];
+    name: string;
+  }) => {
+    const trimmed = String(args.name ?? "").trim();
+    if (!trimmed)
+      return;
+    setInlineRename({
+      kind: args.kind,
+      key: args.key,
+      packageId: Number(args.packageId),
+      folderPath: Array.isArray(args.folderPath) ? args.folderPath : [],
+      fromName: trimmed,
+      draft: trimmed,
+      saving: false,
+    });
+  }, []);
+
+  const savePackageName = useCallback(async (args: { packageId: number; nextName: string }) => {
+    const packageId = Number(args.packageId);
+    const trimmed = args.nextName.trim();
+    if (!trimmed)
+      return null;
+
+    const detailKey = buildMaterialPackageDetailQueryKey(packageId, useBackend);
+
+    if (useBackend) {
+      const updated = await updateMaterialPackage({ packageId, name: trimmed });
+      queryClient.setQueryData(detailKey, updated);
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return prev;
+        const list = prev as MaterialPackageRecord[];
+        return list.map(p => Number(p.packageId) === packageId ? updated : p);
+      });
+      return updated;
+    }
+
+    const baseList = Array.isArray(queryClient.getQueryData(listQueryKey))
+      ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
+      : readMockPackages();
+    const base = baseList.find(p => Number(p.packageId) === packageId) ?? null;
+    if (!base)
+      return null;
+    const now = new Date().toISOString();
+    const nextRecord: MaterialPackageRecord = { ...base, name: trimmed, updateTime: now };
+    const nextList = baseList.map(p => Number(p.packageId) === packageId ? nextRecord : p);
+    writeMockPackages(nextList);
+    queryClient.setQueryData(listQueryKey, nextList);
+    queryClient.setQueryData(detailKey, nextRecord);
+    return nextRecord;
+  }, [listQueryKey, queryClient, useBackend]);
+
+  const commitInlineRename = useCallback(async () => {
+    const snapshot = inlineRename;
+    if (!snapshot || snapshot.saving)
+      return;
+
+    const trimmed = snapshot.draft.trim();
+    if (!trimmed || trimmed === snapshot.fromName) {
+      closeInlineRename();
+      return;
+    }
+
+    setInlineRename(prev => prev ? { ...prev, saving: true } : prev);
+
+    try {
+      if (snapshot.kind === "package") {
+        const baseNames = packages
+          .filter(p => Number(p.packageId) !== Number(snapshot.packageId))
+          .map(p => p.name ?? "");
+        const finalName = autoRenameVsCodeLike(trimmed, baseNames);
+        if (finalName !== trimmed) {
+          window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+        }
+        await savePackageName({ packageId: snapshot.packageId, nextName: finalName });
+        setSelectedNode((prev) => {
+          if (!prev || prev.kind !== "package")
+            return prev;
+          if (Number(prev.payload.packageId ?? 0) !== Number(snapshot.packageId))
+            return prev;
+          return { ...prev, payload: { ...prev.payload, label: finalName } };
+        });
+        closeInlineRename();
+        return;
+      }
+
+      const pkg = findPackageById(snapshot.packageId);
+      if (!pkg)
+        throw new Error("目标素材箱不存在或已被刷新。");
+      const baseContent = pkg.content ?? buildEmptyMaterialPackageContent();
+
+      const parentPath = snapshot.kind === "folder" ? snapshot.folderPath.slice(0, -1) : snapshot.folderPath;
+      const siblings = getFolderNodesAtPath(baseContent, parentPath);
+      const usedNames = siblings.map(n => n.name).filter(n => n !== snapshot.fromName);
+      const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+      if (finalName !== trimmed) {
+        window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+      }
+
+      if (snapshot.kind === "folder") {
+        const from = snapshot.fromName;
+        const nextContent = draftRenameFolder(baseContent, parentPath, from, finalName);
+        await savePackageContent({ packageId: snapshot.packageId, nextContent });
+
+        const path = [...parentPath.map(n => `folder:${n}`), `folder:${finalName}`];
+        const payload = toPreviewPayload({ kind: "folder", packageId: snapshot.packageId, label: finalName, path });
+        const key = buildNodeKey({ packageId: snapshot.packageId, path });
+        setSelectedNode({ kind: "folder", key, payload });
+        ensureRevealNode(payload);
+        closeInlineRename();
+        return;
+      }
+
+      const from = snapshot.fromName;
+      const existingNote = (siblings.find(n => n.type === "material" && n.name === from) as any)?.note ?? "";
+      const nextContent = draftRenameMaterial(baseContent, snapshot.folderPath, from, finalName, existingNote);
+      await savePackageContent({ packageId: snapshot.packageId, nextContent });
+
+      const path = [...snapshot.folderPath.map(n => `folder:${n}`), `material:${finalName}`];
+      const payload = toPreviewPayload({ kind: "material", packageId: snapshot.packageId, label: finalName, path });
+      const key = buildNodeKey({ packageId: snapshot.packageId, path });
+      setSelectedNode({ kind: "material", key, payload });
+      ensureRevealNode(payload);
+      closeInlineRename();
+    }
+    catch (error) {
+      setInlineRename(prev => prev ? { ...prev, saving: false } : prev);
+      const message = error instanceof Error ? error.message : "重命名失败";
+      window.alert(message);
+    }
+  }, [closeInlineRename, ensureRevealNode, findPackageById, inlineRename, packages, savePackageContent, savePackageName]);
 
   const buildMessagesFromFile = useCallback(async (file: File) => {
     const lower = file.name.toLowerCase();
@@ -1041,12 +1225,12 @@ export default function MaterialPackageNavPanel({
     setPendingChoosePackageId(first != null ? Number(first) : null);
   }, [packages, pendingChoosePackage]);
 
-  const maybeOpenPreviewByDoubleClick = useCallback((event: React.MouseEvent, key: string, payload: MaterialPreviewPayload) => {
+  const maybeTriggerByDoubleClick = useCallback((event: React.MouseEvent, key: string, action: "open" | "rename", run: () => void) => {
     // NOTE: 线上反馈里 dblclick / event.detail 在部分环境不稳定，这里手动做“双击检测”兜底
     const nowMs = Date.now();
     const prev = lastClickRef.current;
-    lastClickRef.current = { key, timeMs: nowMs };
-    const isSameTarget = prev?.key === key;
+    lastClickRef.current = { key, action, timeMs: nowMs };
+    const isSameTarget = prev?.key === key && prev?.action === action;
     const isWithinWindow = typeof prev?.timeMs === "number" && (nowMs - prev.timeMs) <= 350;
     if (!isSameTarget || !isWithinWindow)
       return;
@@ -1054,8 +1238,8 @@ export default function MaterialPackageNavPanel({
     lastClickRef.current = null;
     event.preventDefault();
     event.stopPropagation();
-    openPreview(payload, null);
-  }, [openPreview]);
+    run();
+  }, []);
 
   type VisibleItem =
     | {
@@ -1290,6 +1474,7 @@ export default function MaterialPackageNavPanel({
       const visibility = normalizePackageVisibility(pkg?.visibility);
       const visibilityCopy = getVisibilityCopy(visibility);
       const isVisibilityOpen = visibilityEditor?.packageId === packageId;
+      const isEditingName = inlineRename?.key === item.key;
       return (
         <div
           key={item.key}
@@ -1307,9 +1492,16 @@ export default function MaterialPackageNavPanel({
             }}
             onClick={(e) => {
               setSelectedNode({ kind: "package", key: item.key, payload: item.payload });
-              maybeOpenPreviewByDoubleClick(e, item.key, item.payload);
+              const target = e.target as HTMLElement | null;
+              const action = target?.closest?.("[data-inline-rename='1']") ? "rename" : "open";
+              maybeTriggerByDoubleClick(e, item.key, action, () => {
+                if (action === "rename") {
+                  startInlineRename({ kind: "package", key: item.key, packageId, folderPath: [], name: item.label });
+                  return;
+                }
+                openPreview(item.payload, null);
+              });
             }}
-            onDoubleClick={() => openPreview(item.payload, null)}
             data-node-key={item.key}
           >
             <button
@@ -1325,7 +1517,51 @@ export default function MaterialPackageNavPanel({
               <ChevronDown className={`size-4 opacity-80 ${item.isCollapsed ? "-rotate-90" : ""}`} />
             </button>
             <PackageIcon className="size-4 opacity-70" weight="bold" />
-            <span className="flex-1 truncate">{item.label}</span>
+            {isEditingName ? (
+              <div className="flex-1 min-w-0 relative">
+                <span
+                  ref={inlineRenameMeasureRef}
+                  className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                >
+                  {inlineRename?.draft ?? ""}
+                </span>
+                <input
+                  ref={inlineRenameInputRef}
+                  value={inlineRename?.draft ?? ""}
+                  onChange={(e) => setInlineRename(prev => prev ? { ...prev, draft: e.target.value } : prev)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitInlineRename();
+                    }
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeInlineRename();
+                    }
+                  }}
+                  onBlur={() => void commitInlineRename()}
+                  className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                  style={{
+                    width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined,
+                  }}
+                  disabled={Boolean(inlineRename?.saving)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  data-inline-rename="1"
+                  aria-label="重命名素材箱"
+                />
+              </div>
+            ) : (
+              <div className="flex-1 min-w-0">
+                <span
+                  className="inline-block max-w-full truncate"
+                  data-inline-rename="1"
+                  title="双击重命名"
+                >
+                  {item.label}
+                </span>
+              </div>
+            )}
             <PortalTooltip label={`拖拽到右侧打开预览：${item.label}`} placement="right">
               <span className="text-[11px] opacity-50 px-1">
                 {item.nodeCount ? `${item.nodeCount}项` : "空"}
@@ -1351,6 +1587,7 @@ export default function MaterialPackageNavPanel({
 
     if (item.kind === "folder") {
       const isSelected = selectedNode?.key === item.key;
+      const isEditingName = inlineRename?.key === item.key;
       return (
         <div
           key={item.key}
@@ -1369,9 +1606,17 @@ export default function MaterialPackageNavPanel({
             }}
             onClick={(e) => {
               setSelectedNode({ kind: "folder", key: item.key, payload: item.payload });
-              maybeOpenPreviewByDoubleClick(e, item.key, item.payload);
+              const target = e.target as HTMLElement | null;
+              const action = target?.closest?.("[data-inline-rename='1']") ? "rename" : "open";
+              maybeTriggerByDoubleClick(e, item.key, action, () => {
+                if (action === "rename") {
+                  const folderPath = payloadPathToFolderNames(item.payload.path);
+                  startInlineRename({ kind: "folder", key: item.key, packageId: Number(item.payload.packageId), folderPath, name: item.name });
+                  return;
+                }
+                openPreview(item.payload, null);
+              });
             }}
-            onDoubleClick={() => openPreview(item.payload, null)}
             data-node-key={item.key}
           >
             <button
@@ -1387,12 +1632,57 @@ export default function MaterialPackageNavPanel({
               <ChevronDown className={`size-4 opacity-80 ${item.isCollapsed ? "-rotate-90" : ""}`} />
             </button>
             <FolderIcon className="size-4 opacity-70" />
-            <span className="flex-1 truncate">{item.name}</span>
+            {isEditingName ? (
+              <div className="flex-1 min-w-0 relative">
+                <span
+                  ref={inlineRenameMeasureRef}
+                  className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                >
+                  {inlineRename?.draft ?? ""}
+                </span>
+                <input
+                  ref={inlineRenameInputRef}
+                  value={inlineRename?.draft ?? ""}
+                  onChange={(e) => setInlineRename(prev => prev ? { ...prev, draft: e.target.value } : prev)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitInlineRename();
+                    }
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeInlineRename();
+                    }
+                  }}
+                  onBlur={() => void commitInlineRename()}
+                  className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                  style={{
+                    width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined,
+                  }}
+                  disabled={Boolean(inlineRename?.saving)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  data-inline-rename="1"
+                  aria-label="重命名文件夹"
+                />
+              </div>
+            ) : (
+              <div className="flex-1 min-w-0">
+                <span
+                  className="inline-block max-w-full truncate"
+                  data-inline-rename="1"
+                  title="双击重命名"
+                >
+                  {item.name}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       );
     }
 
+    const isEditingName = inlineRename?.key === item.key;
     return (
       <div
         key={item.key}
@@ -1408,16 +1698,68 @@ export default function MaterialPackageNavPanel({
         }}
         onClick={(e) => {
           setSelectedNode({ kind: "material", key: item.key, payload: item.payload });
-          maybeOpenPreviewByDoubleClick(e, item.key, item.payload);
+          const target = e.target as HTMLElement | null;
+          const action = target?.closest?.("[data-inline-rename='1']") ? "rename" : "open";
+          maybeTriggerByDoubleClick(e, item.key, action, () => {
+            if (action === "rename") {
+              const folderPath = payloadPathToFolderNames(item.payload.path);
+              startInlineRename({ kind: "material", key: item.key, packageId: Number(item.payload.packageId), folderPath, name: item.name });
+              return;
+            }
+            openPreview(item.payload, null);
+          });
         }}
-        onDoubleClick={() => openPreview(item.payload, null)}
         data-node-key={item.key}
       >
         <FileImageIcon className="size-4 opacity-70" />
-        <span className="flex-1 truncate">{item.name}</span>
+        {isEditingName ? (
+          <div className="flex-1 min-w-0 relative">
+            <span
+              ref={inlineRenameMeasureRef}
+              className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+            >
+              {inlineRename?.draft ?? ""}
+            </span>
+            <input
+              ref={inlineRenameInputRef}
+              value={inlineRename?.draft ?? ""}
+              onChange={(e) => setInlineRename(prev => prev ? { ...prev, draft: e.target.value } : prev)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitInlineRename();
+                }
+                else if (e.key === "Escape") {
+                  e.preventDefault();
+                  closeInlineRename();
+                }
+              }}
+              onBlur={() => void commitInlineRename()}
+              className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+              style={{
+                width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined,
+              }}
+              disabled={Boolean(inlineRename?.saving)}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              data-inline-rename="1"
+              aria-label="重命名文件"
+            />
+          </div>
+        ) : (
+          <div className="flex-1 min-w-0">
+            <span
+              className="inline-block max-w-full truncate"
+              data-inline-rename="1"
+              title="双击重命名"
+            >
+              {item.name}
+            </span>
+          </div>
+        )}
       </div>
     );
-  }, [dockedPreview, findPackageById, maybeOpenPreviewByDoubleClick, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, resolvedDockIndex, selectedNode?.key, toggleCollapsed, visibilityEditor?.packageId]);
+  }, [closeInlineRename, commitInlineRename, dockedPreview, findPackageById, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, maybeTriggerByDoubleClick, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, resolvedDockIndex, selectedNode?.key, startInlineRename, toggleCollapsed, visibilityEditor?.packageId]);
 
   return (
     <div
