@@ -12,3 +12,7 @@ export function buildMaterialPackageDetailQueryKey(packageId: number, useBackend
   return ["materialPackage", "detail", packageId, toSource(useBackend)] as const;
 }
 
+export function buildMaterialPackageSquareQueryKey(useBackend: boolean) {
+  return ["materialPackage", "square", toSource(useBackend)] as const;
+}
+

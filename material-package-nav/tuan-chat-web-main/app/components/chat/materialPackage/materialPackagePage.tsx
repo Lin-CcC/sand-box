@@ -4,8 +4,6 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import ChatPageLayout from "@/components/chat/chatPageLayout";
 import { SpaceContext } from "@/components/chat/core/spaceContext";
-import DiscoverArchivedSpacesView from "@/components/chat/discover/discoverArchivedSpacesView";
-import DiscoverProductionPlaceholder from "@/components/chat/discover/discoverProductionPlaceholder";
 import useChatPageContextMenus from "@/components/chat/hooks/useChatPageContextMenus";
 import useChatPageLeftDrawer from "@/components/chat/hooks/useChatPageLeftDrawer";
 import useChatPageNavigation from "@/components/chat/hooks/useChatPageNavigation";
@@ -19,6 +17,7 @@ import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage
 import { useScreenSize } from "@/components/common/customHooks/useScreenSize";
 import { useGlobalContext } from "@/components/globalContextProvider";
 import MaterialPackageNavPanel from "@/components/chat/materialPackage/materialPackageNavPanel";
+import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import {
   getMaterialPreviewDragData,
@@ -26,7 +25,6 @@ import {
 } from "@/components/chat/materialPackage/materialPackageDnd";
 
 const EMPTY_ARRAY: never[] = [];
-const isProductionMode = import.meta.env.MODE === "production";
 
 export default function MaterialPackagePage() {
   const screenSize = useScreenSize();
@@ -210,7 +208,7 @@ export default function MaterialPackagePage() {
       onDrop={handleDropToMain}
     >
       <div className="w-full h-full">
-        {isProductionMode ? <DiscoverProductionPlaceholder /> : <DiscoverArchivedSpacesView mode="square" />}
+        <MaterialPackageSquareView activeSpaceId={activeSpaceId} />
       </div>
 
       {activePreview && (

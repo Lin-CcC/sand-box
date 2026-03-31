@@ -17,7 +17,8 @@ import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPrev
 import PortalTooltip from "@/components/common/portalTooltip";
 import { ChevronDown, FolderIcon, SidebarSimpleIcon } from "@/icons";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
-import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
+import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey, buildMaterialPackageSquareQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
+import { applyVisibilityToSquare, removeSquareRecord } from "@/components/chat/materialPackage/materialPackageSquareCache";
 import type { SelectedExplorerNode } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { autoRenameVsCodeLike, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
@@ -173,6 +174,7 @@ export default function MaterialPackageNavPanel({
   const [toolbarPinned, setToolbarPinned] = useLocalStorage<boolean>("tc:material-package:toolbar-pinned", false);
   const queryClient = useQueryClient();
   const listQueryKey = buildMaterialPackageMyQueryKey(useBackend);
+  const squareQueryKey = buildMaterialPackageSquareQueryKey(useBackend);
 
   const packagesQuery = useQuery({
     queryKey: listQueryKey,
@@ -360,14 +362,18 @@ export default function MaterialPackageNavPanel({
 
   const saveMockRecord = useCallback((nextRecord: MaterialPackageRecord) => {
     const now = new Date().toISOString();
+    const updateTime = typeof nextRecord.updateTime === "string" ? nextRecord.updateTime : now;
+    const nowRecord: MaterialPackageRecord = { ...nextRecord, updateTime };
     const base = Array.isArray(queryClient.getQueryData(listQueryKey))
       ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
       : readMockPackages();
-    const nextList = (base ?? []).map(p => Number(p.packageId) === Number(nextRecord.packageId) ? { ...nextRecord, updateTime: now } : p);
+    const nextList = (base ?? []).map(p => Number(p.packageId) === Number(nowRecord.packageId) ? nowRecord : p);
     saveMockList(nextList);
-    const detailKey = buildMaterialPackageDetailQueryKey(Number(nextRecord.packageId), useBackend);
-    queryClient.setQueryData(detailKey, { ...nextRecord, updateTime: now });
-  }, [queryClient, listQueryKey, saveMockList, useBackend]);
+    const detailKey = buildMaterialPackageDetailQueryKey(Number(nowRecord.packageId), useBackend);
+    queryClient.setQueryData(detailKey, nowRecord);
+    queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], nowRecord));
+    return nowRecord;
+  }, [queryClient, listQueryKey, saveMockList, squareQueryKey, useBackend]);
 
   const savePackageContent = useCallback(async (args: { packageId: number; nextContent: MaterialPackageContent }) => {
     const packageId = Number(args.packageId);
@@ -382,6 +388,7 @@ export default function MaterialPackageNavPanel({
         const list = prev as MaterialPackageRecord[];
         return list.map(p => Number(p.packageId) === packageId ? updated : p);
       });
+      queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], updated));
       return updated;
     }
 
@@ -389,9 +396,9 @@ export default function MaterialPackageNavPanel({
     if (!base)
       return null;
     const nextRecord: MaterialPackageRecord = { ...base, content: args.nextContent, updateTime: new Date().toISOString() };
-    saveMockRecord(nextRecord);
-    return nextRecord;
-  }, [findPackageById, listQueryKey, queryClient, useBackend]);
+    const saved = saveMockRecord(nextRecord);
+    return saved;
+  }, [findPackageById, listQueryKey, queryClient, saveMockRecord, squareQueryKey, useBackend]);
 
   const closeVisibilityEditor = useCallback(() => {
     setVisibilityEditor((prev) => {
@@ -493,15 +500,25 @@ export default function MaterialPackageNavPanel({
     const detailKey = buildMaterialPackageDetailQueryKey(packageId, useBackend);
 
     if (useBackend) {
+      const baseList = Array.isArray(queryClient.getQueryData(listQueryKey))
+        ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
+        : null;
+      const baseRecord = baseList?.find(p => Number(p.packageId) === packageId) ?? findPackageById(packageId);
+
       const updated = await updateMaterialPackage({ packageId, visibility });
-      queryClient.setQueryData(detailKey, updated);
+      const stableUpdated: MaterialPackageRecord = baseRecord?.updateTime
+        ? { ...updated, updateTime: baseRecord.updateTime }
+        : updated;
+
+      queryClient.setQueryData(detailKey, stableUpdated);
       queryClient.setQueryData(listQueryKey, (prev) => {
         if (!Array.isArray(prev))
           return prev;
         const list = prev as MaterialPackageRecord[];
-        return list.map(p => Number(p.packageId) === packageId ? updated : p);
+        return list.map(p => Number(p.packageId) === packageId ? stableUpdated : p);
       });
-      return updated;
+      queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], stableUpdated));
+      return stableUpdated;
     }
 
     const baseList = Array.isArray(queryClient.getQueryData(listQueryKey))
@@ -517,8 +534,9 @@ export default function MaterialPackageNavPanel({
     writeMockPackages(nextList);
     queryClient.setQueryData(listQueryKey, nextList);
     queryClient.setQueryData(detailKey, nextRecord);
+    queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], nextRecord));
     return nextRecord;
-  }, [findPackageById, listQueryKey, queryClient, useBackend]);
+  }, [findPackageById, listQueryKey, queryClient, squareQueryKey, useBackend]);
 
   const ensureRevealNode = useCallback((payload: MaterialPreviewPayload) => {
     const packageId = Number(payload.packageId ?? 0);
@@ -615,6 +633,7 @@ export default function MaterialPackageNavPanel({
         const list = prev as MaterialPackageRecord[];
         return list.map(p => Number(p.packageId) === packageId ? updated : p);
       });
+      queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], updated));
       return updated;
     }
 
@@ -630,8 +649,9 @@ export default function MaterialPackageNavPanel({
     writeMockPackages(nextList);
     queryClient.setQueryData(listQueryKey, nextList);
     queryClient.setQueryData(detailKey, nextRecord);
+    queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], nextRecord));
     return nextRecord;
-  }, [listQueryKey, queryClient, useBackend]);
+  }, [listQueryKey, queryClient, squareQueryKey, useBackend]);
 
   const commitInlineRename = useCallback(async () => {
     const snapshot = inlineRename;
@@ -928,6 +948,7 @@ export default function MaterialPackageNavPanel({
           return [created];
         return [created, ...(prev as MaterialPackageRecord[])];
       });
+      queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], created));
       const key = `root:${Number(created.packageId)}`;
       const payload = toPreviewPayload({ kind: "package", packageId: Number(created.packageId), label: created.name, path: [] });
       setSelectedNode({ kind: "package", key, payload });
@@ -956,12 +977,13 @@ export default function MaterialPackageNavPanel({
     const nextList = [created, ...(base ?? [])];
     saveMockList(nextList);
     queryClient.setQueryData(buildMaterialPackageDetailQueryKey(nextId, useBackend), created);
+    queryClient.setQueryData(squareQueryKey, prev => applyVisibilityToSquare(Array.isArray(prev) ? prev : [], created));
     setDefaultTargetPackageId(nextId);
     const key = `root:${nextId}`;
     const payload = toPreviewPayload({ kind: "package", packageId: nextId, label: created.name, path: [] });
     setSelectedNode({ kind: "package", key, payload });
     ensureRevealNode(payload);
-  }, [ensureRevealNode, listQueryKey, packages, queryClient, saveMockList, useBackend]);
+  }, [ensureRevealNode, listQueryKey, packages, queryClient, saveMockList, squareQueryKey, useBackend]);
 
   const handleToolbarImport = useCallback(() => {
     const resolved = resolveTarget({ selectedNode, packages, defaultTargetPackageId });
@@ -1107,6 +1129,7 @@ export default function MaterialPackageNavPanel({
           const list = prev as MaterialPackageRecord[];
           return list.filter(p => Number(p.packageId) !== packageId);
         });
+        queryClient.setQueryData(squareQueryKey, prev => removeSquareRecord(Array.isArray(prev) ? prev : [], packageId));
 
         setCollapsedByKey((prev) => {
           const next: Record<string, boolean> = {};
@@ -1188,7 +1211,7 @@ export default function MaterialPackageNavPanel({
       const message = error instanceof Error ? error.message : "删除失败";
       window.alert(message);
     }
-  }, [ensureRevealNode, findPackageById, listQueryKey, queryClient, savePackageContent, setCollapsedByKey, useBackend]);
+  }, [ensureRevealNode, findPackageById, listQueryKey, queryClient, savePackageContent, setCollapsedByKey, squareQueryKey, useBackend]);
 
   const handleToolbarReveal = useCallback(() => {
     if (selectedNode?.payload) {

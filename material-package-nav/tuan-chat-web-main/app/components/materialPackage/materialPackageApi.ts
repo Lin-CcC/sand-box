@@ -334,8 +334,8 @@ export async function deleteMaterialPackage(packageId: number, client?: Material
   return unwrapOpenApiResultData(response, "删除素材包失败");
 }
 
-export async function getMaterialPackageSquare(query?: Record<string, unknown>, client?: MaterialPackageApiClientOptions) {
-  const response = await requestMaterialPackageApi<any>({
+export async function getMaterialPackageSquare(query?: Record<string, unknown>, client?: MaterialPackageApiClientOptions): Promise<MaterialPackageRecord[]> {
+  const response = await requestMaterialPackageApi<MaterialPackageRecord[]>({
     method: "GET",
     path: "/materialPackage/square",
     query,

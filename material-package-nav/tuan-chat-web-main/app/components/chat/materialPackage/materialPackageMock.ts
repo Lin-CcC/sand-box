@@ -1,4 +1,9 @@
 import type { MaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
+import { readMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
+
+export function getMockMaterialPackageSquare(): MaterialPackageRecord[] {
+  return readMockPackages().filter(p => p.visibility === 1);
+}
 
 export function getMockMyMaterialPackages(): MaterialPackageRecord[] {
   const now = new Date().toISOString();
@@ -90,4 +95,3 @@ export function getMockMyMaterialPackages(): MaterialPackageRecord[] {
     },
   ];
 }
-
