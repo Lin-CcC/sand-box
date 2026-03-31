@@ -75,6 +75,37 @@ function normalizePackages(payload: unknown): MaterialPackageRecord[] {
   return payload.filter(Boolean) as MaterialPackageRecord[];
 }
 
+function parseUpdateTimeMs(value: string | null | undefined) {
+  const ms = Date.parse(String(value ?? ""));
+  return Number.isFinite(ms) ? ms : -Infinity;
+}
+
+function buildSortedPackageIdOrder(packages: MaterialPackageRecord[]) {
+  const indexed = packages.map((pkg, index) => ({ pkg, index }));
+  indexed.sort((a, b) => {
+    const timeDiff = parseUpdateTimeMs(b.pkg.updateTime) - parseUpdateTimeMs(a.pkg.updateTime);
+    if (timeDiff !== 0)
+      return timeDiff;
+    const idDiff = Number(b.pkg.packageId) - Number(a.pkg.packageId);
+    if (idDiff !== 0)
+      return idDiff;
+    return a.index - b.index;
+  });
+  return indexed.map(({ pkg }) => Number(pkg.packageId));
+}
+
+function reconcilePackageOrder(prevOrder: number[], nextPackages: MaterialPackageRecord[]) {
+  const nextIds = nextPackages.map(p => Number(p.packageId));
+  const nextIdSet = new Set(nextIds);
+
+  const kept = prevOrder.filter(id => nextIdSet.has(id));
+  const keptSet = new Set(kept);
+  const added = nextPackages.filter(p => !keptSet.has(Number(p.packageId)));
+
+  const addedIds = buildSortedPackageIdOrder(added);
+  return [...addedIds, ...kept];
+}
+
 function clampInt(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -106,9 +137,66 @@ export default function MaterialPackageNavPanel({
     refetchOnWindowFocus: false,
   });
 
+  const rawPackages = useMemo(() => normalizePackages(packagesQuery.data), [packagesQuery.data]);
+  const [packageOrder, setPackageOrder] = useState<number[] | null>(null);
+  const [shouldResortPackages, setShouldResortPackages] = useState<boolean>(true);
+  const prevDrawerOpenRef = useRef<boolean | undefined>(isLeftDrawerOpen);
+
+  useEffect(() => {
+    const prev = prevDrawerOpenRef.current;
+    prevDrawerOpenRef.current = isLeftDrawerOpen;
+    if (prev === false && isLeftDrawerOpen === true) {
+      setShouldResortPackages(true);
+    }
+  }, [isLeftDrawerOpen]);
+
+  useEffect(() => {
+    if (!rawPackages.length) {
+      setPackageOrder(null);
+      setShouldResortPackages(false);
+      return;
+    }
+
+    setPackageOrder((prev) => {
+      if (shouldResortPackages || !prev?.length) {
+        return buildSortedPackageIdOrder(rawPackages);
+      }
+      return reconcilePackageOrder(prev, rawPackages);
+    });
+
+    if (shouldResortPackages) {
+      setShouldResortPackages(false);
+    }
+  }, [rawPackages, shouldResortPackages]);
+
   const packages = useMemo(() => {
-    return normalizePackages(packagesQuery.data);
-  }, [packagesQuery.data]);
+    if (!packageOrder?.length)
+      return rawPackages;
+
+    const byId = new Map<number, MaterialPackageRecord>();
+    rawPackages.forEach((pkg) => {
+      byId.set(Number(pkg.packageId), pkg);
+    });
+
+    const ordered: MaterialPackageRecord[] = [];
+    packageOrder.forEach((id) => {
+      const pkg = byId.get(id);
+      if (pkg)
+        ordered.push(pkg);
+    });
+
+    if (ordered.length === rawPackages.length)
+      return ordered;
+
+    const orderedSet = new Set(ordered.map(p => Number(p.packageId)));
+    rawPackages.forEach((pkg) => {
+      const id = Number(pkg.packageId);
+      if (!orderedSet.has(id))
+        ordered.push(pkg);
+    });
+
+    return ordered;
+  }, [packageOrder, rawPackages]);
 
   const [selectedNode, setSelectedNode] = useState<SelectedExplorerNode>(null);
   const [defaultTargetPackageId, setDefaultTargetPackageId] = useState<number | null>(null);
@@ -573,6 +661,7 @@ export default function MaterialPackageNavPanel({
   }, [applyImportFiles, defaultTargetPackageId, findPackageById, packages, pendingImportTarget, selectedNode]);
 
   const handleToolbarRefresh = useCallback(() => {
+    setShouldResortPackages(true);
     packagesQuery.refetch();
   }, [packagesQuery]);
 
