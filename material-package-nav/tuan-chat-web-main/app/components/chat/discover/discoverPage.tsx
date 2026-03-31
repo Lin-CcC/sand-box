@@ -22,7 +22,13 @@ import { useGlobalContext } from "@/components/globalContextProvider";
 const EMPTY_ARRAY: never[] = [];
 const isProductionMode = import.meta.env.MODE === "production";
 
-export default function DiscoverPage() {
+export type DiscoverMode = "square" | "my";
+
+interface DiscoverPageProps {
+  mode: DiscoverMode;
+}
+
+export default function DiscoverPage({ mode }: DiscoverPageProps) {
   const screenSize = useScreenSize();
   const navigate = useNavigate();
   const [searchParam] = useSearchParams();
@@ -155,9 +161,10 @@ export default function DiscoverPage() {
               onCloseLeftDrawer={closeLeftDrawer}
               onToggleLeftDrawer={toggleLeftDrawer}
               isLeftDrawerOpen={isOpenLeftDrawer}
+              activeMode={mode}
             />
           )}
-          mainContent={isProductionMode ? <DiscoverProductionPlaceholder /> : <DiscoverArchivedSpacesView mode="square" />}
+          mainContent={isProductionMode ? <DiscoverProductionPlaceholder /> : <DiscoverArchivedSpacesView mode={mode} />}
         />
         <SpaceContextMenu
           contextMenu={spaceContextMenu}
