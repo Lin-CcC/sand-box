@@ -1,6 +1,7 @@
 import type { MaterialItemNode, MaterialPackageContent, MaterialPackageRecord, SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 
@@ -15,6 +16,7 @@ import { draftCreateFolder, draftCreateMaterial } from "@/components/chat/materi
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
 import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
+import { findMockPackageById } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { ArrowClockwise, CrosshairSimple, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
   createSpaceMaterialPackage,
@@ -795,107 +797,137 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       )}
 
       {isImportOpen && (
-        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 px-4" onMouseDown={() => setIsImportOpen(false)}>
-          <div
-            className="w-full max-w-6xl h-[80vh] rounded-xl border border-base-300 bg-base-100 shadow-xl overflow-hidden"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <MaterialPackageSquareView
-              activeSpaceId={spaceId}
-              spaces={[{ spaceId, name: spaceName ?? `Space #${spaceId}` }]}
-              forcedImportSpaceId={spaceId}
-              onImportedToSpace={() => {
-                setIsImportOpen(false);
-                void queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
-              }}
-            />
-          </div>
-        </div>
+        typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/40 px-4" onMouseDown={() => setIsImportOpen(false)}>
+            <div
+              className="w-full max-w-6xl h-[80vh] rounded-xl border border-base-300 bg-base-100 shadow-xl overflow-hidden"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <MaterialPackageSquareView
+                activeSpaceId={spaceId}
+                spaces={[{ spaceId, name: spaceName ?? `Space #${spaceId}` }]}
+                forcedImportSpaceId={spaceId}
+                onImportedToSpace={({ packageId }) => {
+                  if (!useBackend) {
+                    const pkg = findMockPackageById(Number(packageId));
+                    if (pkg) {
+                      const base = readMockPackages(spaceId);
+                      const nextId = Math.max(0, ...base.map(p => Number(p.spacePackageId))) + 1;
+                      const now = nowIso();
+                      const next: SpaceMaterialPackageRecord = {
+                        spacePackageId: nextId,
+                        spaceId,
+                        sourcePackageId: Number(pkg.packageId) || null,
+                        sourceUserId: Number((pkg as any)?.userId) || null,
+                        importedBy: null,
+                        name: pkg.name ?? `素材包#${pkg.packageId}`,
+                        description: pkg.description ?? "",
+                        coverUrl: pkg.coverUrl ?? "",
+                        status: 0,
+                        content: (pkg.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent,
+                        createTime: now,
+                        updateTime: now,
+                      };
+                      writeMockPackages(spaceId, [next, ...base]);
+                      setExpandedId(next.spacePackageId);
+                    }
+                  }
+                  setIsImportOpen(false);
+                  void queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+                }}
+              />
+            </div>
+          </div>,
+          document.body,
+        )
       )}
 
       {isImportFromMyOpen && (
-        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 px-4" onMouseDown={closeImportFromMy}>
-          <div
-            className="w-full max-w-5xl h-[70vh] rounded-xl border border-base-300 bg-base-100 shadow-xl overflow-hidden flex flex-col"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
-              <div className="text-sm font-semibold">从我的素材包导入素材箱</div>
-              <button type="button" className="btn btn-ghost btn-xs btn-square" aria-label="关闭" onClick={closeImportFromMy}>✕</button>
-            </div>
+        typeof document !== "undefined" && createPortal(
+          <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/40 px-4" onMouseDown={closeImportFromMy}>
+            <div
+              className="w-full max-w-5xl h-[70vh] rounded-xl border border-base-300 bg-base-100 shadow-xl overflow-hidden flex flex-col"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+                <div className="text-sm font-semibold">从我的素材包导入素材箱</div>
+                <button type="button" className="btn btn-ghost btn-xs btn-square" aria-label="关闭" onClick={closeImportFromMy}>✕</button>
+              </div>
 
-            <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2">
-              <div className="border-b md:border-b-0 md:border-r border-base-300 min-h-0 flex flex-col">
-                <div className="p-3">
-                  <input
-                    className="input input-bordered input-sm w-full"
-                    placeholder="搜索素材箱…"
-                    value={myImportKeyword}
-                    onChange={(e) => setMyImportKeyword(e.target.value)}
-                  />
-                </div>
-                <div className="flex-1 min-h-0 overflow-auto px-2 pb-3">
-                  {myPackagesQuery.isLoading && (
-                    <div className="px-2 py-2 text-xs opacity-60">加载中…</div>
-                  )}
-                  {!myPackagesQuery.isLoading && filteredMyPackages.length === 0 && (
-                    <div className="px-2 py-2 text-xs opacity-60">暂无可导入的素材箱</div>
-                  )}
-                  {filteredMyPackages.map((pkg) => {
-                    const id = Number((pkg as any)?.packageId);
-                    const isSelected = selectedMyPackageId === id;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        className={`w-full text-left px-2 py-2 rounded-md text-sm ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
-                        onClick={() => setSelectedMyPackageId(id)}
-                      >
-                        <div className="flex items-center gap-2">
-                          <PackageIcon className="size-4 opacity-70" />
-                          <div className="flex-1 min-w-0">
-                            <div className="font-medium truncate">{pkg?.name ?? `素材箱#${id}`}</div>
-                            <div className="text-xs opacity-60 truncate">{pkg?.description ?? ""}</div>
+              <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2">
+                <div className="border-b md:border-b-0 md:border-r border-base-300 min-h-0 flex flex-col">
+                  <div className="p-3">
+                    <input
+                      className="input input-bordered input-sm w-full"
+                      placeholder="搜索素材箱…"
+                      value={myImportKeyword}
+                      onChange={(e) => setMyImportKeyword(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-auto px-2 pb-3">
+                    {myPackagesQuery.isLoading && (
+                      <div className="px-2 py-2 text-xs opacity-60">加载中…</div>
+                    )}
+                    {!myPackagesQuery.isLoading && filteredMyPackages.length === 0 && (
+                      <div className="px-2 py-2 text-xs opacity-60">暂无可导入的素材箱</div>
+                    )}
+                    {filteredMyPackages.map((pkg) => {
+                      const id = Number((pkg as any)?.packageId);
+                      const isSelected = selectedMyPackageId === id;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`w-full text-left px-2 py-2 rounded-md text-sm ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+                          onClick={() => setSelectedMyPackageId(id)}
+                        >
+                          <div className="flex items-center gap-2">
+                            <PackageIcon className="size-4 opacity-70" />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{pkg?.name ?? `素材箱#${id}`}</div>
+                              <div className="text-xs opacity-60 truncate">{pkg?.description ?? ""}</div>
+                            </div>
                           </div>
-                        </div>
-                      </button>
-                    );
-                  })}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
 
-              <div className="min-h-0 flex flex-col">
-                <div className="flex-1 min-h-0 overflow-auto p-4">
-                  {selectedMyPackage ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2">
-                        <PackageIcon className="size-5 opacity-70" />
-                        <div className="text-base font-semibold">{selectedMyPackage.name ?? "未命名素材箱"}</div>
+                <div className="min-h-0 flex flex-col">
+                  <div className="flex-1 min-h-0 overflow-auto p-4">
+                    {selectedMyPackage ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <PackageIcon className="size-5 opacity-70" />
+                          <div className="text-base font-semibold">{selectedMyPackage.name ?? "未命名素材箱"}</div>
+                        </div>
+                        <div className="text-sm opacity-70 whitespace-pre-wrap break-words">{selectedMyPackage.description ?? "暂无描述"}</div>
+                        <div className="text-xs opacity-60">
+                          导入后会生成局内素材箱副本，可独立编辑，不会发布到素材包广场。
+                        </div>
                       </div>
-                      <div className="text-sm opacity-70 whitespace-pre-wrap break-words">{selectedMyPackage.description ?? "暂无描述"}</div>
-                      <div className="text-xs opacity-60">
-                        导入后会生成局内素材箱副本，可独立编辑，不会发布到素材包广场。
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-sm opacity-60">左侧选择一个素材箱以查看详情并导入。</div>
-                  )}
-                </div>
-                <div className="border-t border-base-300 px-4 py-3 flex items-center justify-end gap-2">
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={closeImportFromMy} disabled={isMyImporting}>取消</button>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => { void runImportFromMy(); }}
-                    disabled={!selectedMyPackage || isMyImporting}
-                  >
-                    {isMyImporting ? "导入中…" : "导入到局内素材库"}
-                  </button>
+                    ) : (
+                      <div className="text-sm opacity-60">左侧选择一个素材箱以查看详情并导入。</div>
+                    )}
+                  </div>
+                  <div className="border-t border-base-300 px-4 py-3 flex items-center justify-end gap-2">
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={closeImportFromMy} disabled={isMyImporting}>取消</button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => { void runImportFromMy(); }}
+                      disabled={!selectedMyPackage || isMyImporting}
+                    >
+                      {isMyImporting ? "导入中…" : "导入到局内素材库"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        </div>
+          </div>,
+          document.body,
+        )
       )}
 
       <ConfirmModal

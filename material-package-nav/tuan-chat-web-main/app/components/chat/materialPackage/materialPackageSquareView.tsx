@@ -230,7 +230,7 @@ export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace
     <div className="relative h-full w-full">
       <div className="flex h-full w-full">
         <div className="flex-1 h-full overflow-y-auto">
-          <div className="sticky top-0 z-20 bg-base-200 border-t border-b border-gray-300 dark:border-gray-700">
+          <div className="sticky top-0 z-20 bg-base-200 border-b border-base-300">
             <div className="flex items-center justify-between gap-4 px-6 h-12">
               <div className="shrink-0 min-w-0">
                 <div className="text-sm font-semibold whitespace-nowrap">素材包广场</div>
