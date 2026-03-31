@@ -1,4 +1,4 @@
-import type { SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
+import type { MaterialItemNode, MaterialPackageContent, MaterialPackageRecord, SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,14 +6,22 @@ import toast from "react-hot-toast";
 
 import ConfirmModal from "@/components/common/comfirmModel";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
+import PortalTooltip from "@/components/common/portalTooltip";
 import { buildEmptyMaterialPackageContent } from "@/components/chat/materialPackage/materialPackageDraft";
 import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
-import { AddIcon, ChevronDown } from "@/icons";
+import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { draftCreateFolder, draftCreateMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
+import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
+import { ChevronDown, FolderIcon } from "@/icons";
+import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
+import { ArrowClockwise, CrosshairSimple, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
   createSpaceMaterialPackage,
   deleteSpaceMaterialPackage,
+  getMyMaterialPackages,
   getSpaceMaterialPackage,
+  importMaterialPackageToSpace,
   listSpaceMaterialPackages,
   updateSpaceMaterialPackage,
 } from "@/components/materialPackage/materialPackageApi";
@@ -34,6 +42,10 @@ function buildListQueryKey(spaceId: number, useBackend: boolean) {
 
 function buildDetailQueryKey(spacePackageId: number, useBackend: boolean) {
   return ["spaceMaterialPackage", spacePackageId, useBackend] as const;
+}
+
+function buildMyPackagesQueryKey(useBackend: boolean) {
+  return ["myMaterialPackages", useBackend] as const;
 }
 
 type SpaceMaterialMockState = Record<string, SpaceMaterialPackageRecord[]>;
@@ -84,11 +96,17 @@ function SpaceMaterialTree({
   useBackend,
   isExpanded,
   onToggleExpanded,
+  selectedKey,
+  onSelectNode,
+  onRenamePackage,
 }: {
   record: SpaceMaterialPackageRecord;
   useBackend: boolean;
   isExpanded: boolean;
   onToggleExpanded: () => void;
+  selectedKey: string | null;
+  onSelectNode: (args: { kind: "package" | "folder" | "material"; key: string; packageId: number }) => void;
+  onRenamePackage: (record: SpaceMaterialPackageRecord) => void;
 }) {
   const spacePackageId = Number(record.spacePackageId);
   const query = useQuery({
@@ -100,8 +118,12 @@ function SpaceMaterialTree({
     refetchOnWindowFocus: false,
   });
 
-  const content = useBackend ? (query.data?.content ?? record.content) : record.content;
+  const content: MaterialPackageContent = useBackend
+    ? ((query.data?.content ?? record.content) as MaterialPackageContent)
+    : (record.content as MaterialPackageContent);
   const root = normalizeNodes((content as any)?.root);
+  const nodeCount = Array.isArray((content as any)?.root) ? (content as any).root.length : 0;
+  const [collapsedFolderKey, setCollapsedFolderKey] = useState<Record<string, boolean>>({});
 
   const renderNodes = (nodes: any[], folderPath: string[], depth: number) => {
     return nodes.map((node, index) => {
@@ -112,11 +134,13 @@ function SpaceMaterialTree({
         const children = normalizeNodes(node.children);
         const nextPath = [...folderPath, node.name];
         const payloadPath = [...folderPath.map(makeFolderToken), makeFolderToken(node.name)];
+        const nodeKey = `folder:${spacePackageId}:${payloadPath.join("/")}`;
+        const isCollapsed = Boolean(collapsedFolderKey[nodeKey]);
         return (
           <div key={key}>
             <div
-              className="flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md hover:bg-base-300/40"
-              style={{ paddingLeft: 12 + depth * 14 }}
+              className={`px-1 rounded-md`}
+              data-node-key={nodeKey}
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = "copy";
@@ -129,11 +153,31 @@ function SpaceMaterialTree({
                 });
                 setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
               }}
+              onClick={() => {
+                onSelectNode({ kind: "folder", key: nodeKey, packageId: spacePackageId });
+              }}
             >
-              <span className="opacity-70">▸</span>
-              <span className="truncate">{node.name}</span>
+              <div
+                className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${selectedKey === nodeKey ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+                style={{ paddingLeft: 4 + depth * 14 }}
+              >
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCollapsedFolderKey(prev => ({ ...prev, [nodeKey]: !Boolean(prev[nodeKey]) }));
+                  }}
+                  title={isCollapsed ? "展开" : "折叠"}
+                >
+                  <ChevronDown className={`size-4 opacity-80 ${isCollapsed ? "-rotate-90" : ""}`} />
+                </button>
+                <FolderIcon className="size-4 opacity-70" />
+                <span className="truncate">{node.name}</span>
+              </div>
             </div>
-            {renderNodes(children, nextPath, depth + 1)}
+            {!isCollapsed && renderNodes(children, nextPath, depth + 1)}
           </div>
         );
       }
@@ -143,11 +187,13 @@ function SpaceMaterialTree({
           ...folderPath.map(makeFolderToken),
           makeMaterialToken(String(node.name ?? "")),
         ];
+        const nodeKey = `material:${spacePackageId}:${payloadPath.join("/")}`;
         return (
           <div
             key={key}
-            className="flex items-center gap-1 py-1 pr-1 text-xs opacity-90 select-none rounded-md hover:bg-base-300/40"
-            style={{ paddingLeft: 12 + depth * 14 }}
+            className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${selectedKey === nodeKey ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            style={{ paddingLeft: 22 + depth * 14 }}
+            data-node-key={nodeKey}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.effectAllowed = "copy";
@@ -160,8 +206,11 @@ function SpaceMaterialTree({
               });
               setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
             }}
+            onClick={() => {
+              onSelectNode({ kind: "material", key: nodeKey, packageId: spacePackageId });
+            }}
           >
-            <span className="opacity-60">•</span>
+            <FileImageIcon className="size-4 opacity-70" />
             <span className="truncate">{node.name}</span>
           </div>
         );
@@ -172,10 +221,13 @@ function SpaceMaterialTree({
   };
 
   return (
-    <div className="px-1 rounded-md">
+    <div className="px-1 rounded-md" data-node-key={`root:${spacePackageId}`}>
       <div
-        className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md hover:bg-base-300/40`}
-        onClick={onToggleExpanded}
+        className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${selectedKey === `root:${spacePackageId}` ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+        onClick={() => {
+          onSelectNode({ kind: "package", key: `root:${spacePackageId}`, packageId: spacePackageId });
+          onToggleExpanded();
+        }}
       >
         <button
           type="button"
@@ -189,7 +241,27 @@ function SpaceMaterialTree({
         >
           <ChevronDown className={`size-4 opacity-80 ${isExpanded ? "" : "-rotate-90"}`} />
         </button>
-        <span className="truncate">{record.name}</span>
+        <div
+          className={`flex-1 min-w-0 truncate ${selectedKey === `root:${spacePackageId}` ? "text-base-content" : ""}`}
+        >
+          <span className="inline-flex items-center gap-1">
+            <PackageIcon className="size-4 opacity-70" />
+            <span
+              className="truncate"
+              title="双击重命名"
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRenamePackage(record);
+              }}
+            >
+              {record.name}
+            </span>
+          </span>
+        </div>
+        <PortalTooltip label={nodeCount ? `${nodeCount}项` : "空"} placement="right">
+          <span className="text-[11px] opacity-50 px-1">{nodeCount ? `${nodeCount}项` : "空"}</span>
+        </PortalTooltip>
       </div>
 
       {isExpanded && (
@@ -240,13 +312,136 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const packages = useMemo(() => Array.isArray(listQuery.data) ? listQuery.data : [], [listQuery.data]);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isImportFromMyOpen, setIsImportFromMyOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
+  const [myImportKeyword, setMyImportKeyword] = useState("");
+  const [selectedMyPackageId, setSelectedMyPackageId] = useState<number | null>(null);
+  const [isMyImporting, setIsMyImporting] = useState(false);
+
+  const activePackageId = useMemo(() => {
+    if (selectedNode?.packageId)
+      return selectedNode.packageId;
+    if (expandedId)
+      return expandedId;
+    return null;
+  }, [expandedId, selectedNode?.packageId]);
 
   const closeDeleteConfirm = () => {
     setIsDeleteConfirmOpen(false);
     setPendingDeleteId(null);
   };
+
+  const myPackagesQuery = useQuery({
+    enabled: isImportFromMyOpen,
+    queryKey: buildMyPackagesQueryKey(useBackend),
+    queryFn: () => useBackend ? getMyMaterialPackages() : Promise.resolve(readMyMockPackages()),
+    staleTime: 30 * 1000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  const myPackages = useMemo(() => Array.isArray(myPackagesQuery.data) ? myPackagesQuery.data as MaterialPackageRecord[] : [], [myPackagesQuery.data]);
+  const filteredMyPackages = useMemo(() => {
+    const q = myImportKeyword.trim().toLowerCase();
+    if (!q)
+      return myPackages;
+    return myPackages.filter((pkg) => {
+      const name = String(pkg?.name ?? "").trim().toLowerCase();
+      const desc = String(pkg?.description ?? "").trim().toLowerCase();
+      return name.includes(q) || desc.includes(q);
+    });
+  }, [myImportKeyword, myPackages]);
+
+  const selectedMyPackage = useMemo(() => {
+    if (!isValidId(selectedMyPackageId))
+      return null;
+    return myPackages.find(p => Number(p.packageId) === selectedMyPackageId) ?? null;
+  }, [myPackages, selectedMyPackageId]);
+
+  const loadPackageContent = useCallback(async (spacePackageId: number) => {
+    if (!useBackend) {
+      const found = readMockPackages(spaceId).find(p => p.spacePackageId === spacePackageId);
+      return (found?.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent;
+    }
+    const detail = await getSpaceMaterialPackage(spacePackageId);
+    return (detail?.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent;
+  }, [spaceId, useBackend]);
+
+  const savePackageContent = useCallback(async (spacePackageId: number, nextContent: MaterialPackageContent) => {
+    if (!useBackend) {
+      const base = readMockPackages(spaceId);
+      writeMockPackages(
+        spaceId,
+        base.map(p => p.spacePackageId === spacePackageId ? { ...p, content: nextContent, updateTime: nowIso() } : p),
+      );
+      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+      return;
+    }
+    await updateSpaceMaterialPackage({ spacePackageId, content: nextContent });
+    await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+    await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(spacePackageId, useBackend) });
+  }, [queryClient, spaceId, useBackend]);
+
+  const closeImportFromMy = useCallback(() => {
+    setIsImportFromMyOpen(false);
+    setMyImportKeyword("");
+    setSelectedMyPackageId(null);
+    setIsMyImporting(false);
+  }, []);
+
+  const runImportFromMy = useCallback(async () => {
+    if (!isValidId(selectedMyPackageId)) {
+      toast.error("请先选择一个素材箱");
+      return;
+    }
+
+    if (!useBackend) {
+      const pkg = readMyMockPackages().find(p => Number(p.packageId) === selectedMyPackageId) ?? null;
+      if (!pkg) {
+        toast.error("素材箱不存在或已被刷新");
+        return;
+      }
+      const base = readMockPackages(spaceId);
+      const nextId = Math.max(0, ...base.map(p => Number(p.spacePackageId))) + 1;
+      const now = nowIso();
+      const next: SpaceMaterialPackageRecord = {
+        spacePackageId: nextId,
+        spaceId,
+        name: pkg.name ?? `素材箱#${selectedMyPackageId}`,
+        description: pkg.description ?? "",
+        coverUrl: pkg.coverUrl ?? "",
+        status: 0,
+        content: (pkg.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent,
+        createTime: now,
+        updateTime: now,
+      };
+      writeMockPackages(spaceId, [next, ...base]);
+      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+      toast.success("mock：已导入到局内素材库");
+      setExpandedId(next.spacePackageId);
+      closeImportFromMy();
+      return;
+    }
+
+    setIsMyImporting(true);
+    try {
+      const result = await importMaterialPackageToSpace(selectedMyPackageId, { spaceId });
+      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+      toast.success("已导入到局内素材库");
+      const maybeId = (result as any)?.spacePackageId;
+      if (typeof maybeId === "number" && Number.isFinite(maybeId) && maybeId > 0) {
+        setExpandedId(maybeId);
+      }
+      closeImportFromMy();
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "导入失败";
+      toast.error(message);
+      setIsMyImporting(false);
+    }
+  }, [closeImportFromMy, queryClient, selectedMyPackageId, spaceId, useBackend]);
 
   const handleCreate = useCallback(async () => {
     const name = "新素材箱";
@@ -289,6 +484,89 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       toast.error(message, { id: toastId });
     }
   }, [queryClient, spaceId, useBackend]);
+
+  const handleToolbarNewFile = useCallback(async () => {
+    const targetPackageId = activePackageId;
+    if (!isValidId(targetPackageId)) {
+      window.alert("请先展开或选中一个局内素材箱。");
+      return;
+    }
+
+    const baseContent = await loadPackageContent(targetPackageId);
+    const nodes = getFolderNodesAtPath(baseContent, []);
+    const usedNames = nodes.map(n => n.name);
+
+    const name = window.prompt("新建文件名（可带任意后缀）", "新文件.txt");
+    const trimmed = (name ?? "").trim();
+    if (!trimmed)
+      return;
+    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+    if (finalName !== trimmed) {
+      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+    }
+
+    const material: MaterialItemNode = { type: "material", name: finalName, note: "", messages: [] };
+    const nextContent = draftCreateMaterial(baseContent, [], material);
+    await savePackageContent(targetPackageId, nextContent);
+
+    const nodeKey = `material:${targetPackageId}:material:${finalName}`;
+    setSelectedNode({ kind: "material", key: nodeKey, packageId: targetPackageId });
+    setExpandedId(targetPackageId);
+    toast.success("已新建文件");
+    setTimeout(() => {
+      document.querySelector(`[data-node-key="${nodeKey}"]`)?.scrollIntoView({ block: "nearest" });
+    }, 0);
+  }, [activePackageId, loadPackageContent, savePackageContent]);
+
+  const handleToolbarNewFolder = useCallback(async () => {
+    const targetPackageId = activePackageId;
+    if (!isValidId(targetPackageId)) {
+      window.alert("请先展开或选中一个局内素材箱。");
+      return;
+    }
+
+    const baseContent = await loadPackageContent(targetPackageId);
+    const nodes = getFolderNodesAtPath(baseContent, []);
+    const usedNames = nodes.map(n => n.name);
+
+    const name = window.prompt("新建文件夹名称", "新建文件夹");
+    const trimmed = (name ?? "").trim();
+    if (!trimmed)
+      return;
+    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+    if (finalName !== trimmed) {
+      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+    }
+
+    const nextContent = draftCreateFolder(baseContent, [], finalName);
+    await savePackageContent(targetPackageId, nextContent);
+
+    const nodeKey = `folder:${targetPackageId}:folder:${finalName}`;
+    setSelectedNode({ kind: "folder", key: nodeKey, packageId: targetPackageId });
+    setExpandedId(targetPackageId);
+    toast.success("已新建文件夹");
+    setTimeout(() => {
+      document.querySelector(`[data-node-key="${nodeKey}"]`)?.scrollIntoView({ block: "nearest" });
+    }, 0);
+  }, [activePackageId, loadPackageContent, savePackageContent]);
+
+  const handleToolbarDelete = useCallback(() => {
+    if (selectedNode?.kind !== "package" || !isValidId(selectedNode.packageId)) {
+      window.alert("请先选中一个局内素材箱再删除。");
+      return;
+    }
+    setPendingDeleteId(selectedNode.packageId);
+    setIsDeleteConfirmOpen(true);
+  }, [selectedNode]);
+
+  const handleToolbarReveal = useCallback(() => {
+    if (!selectedNode?.key)
+      return;
+    setExpandedId(selectedNode.packageId);
+    setTimeout(() => {
+      document.querySelector(`[data-node-key="${selectedNode.key}"]`)?.scrollIntoView({ block: "nearest" });
+    }, 0);
+  }, [selectedNode]);
 
   const handleDelete = useCallback(async () => {
     const id = pendingDeleteId;
@@ -346,7 +624,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
   return (
     <div className="px-1 py-1 relative">
-      <div className="flex items-center gap-2 px-2 py-1 text-xs font-medium opacity-80 select-none rounded-lg hover:bg-base-300/40">
+      <div className="flex items-center justify-between gap-2 px-2 py-1 text-xs font-medium opacity-80 select-none rounded-lg hover:bg-base-300/40 group">
         <button
           type="button"
           className="btn btn-ghost btn-xs"
@@ -360,60 +638,97 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         <span className="flex-1 truncate">局内素材库</span>
 
         {canEdit && (
-          <div className="dropdown dropdown-end">
-            <button
-              type="button"
-              tabIndex={0}
-              className="btn btn-ghost btn-xs"
-              title="添加"
-              aria-label="局内素材库操作"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-            >
-              <AddIcon />
-            </button>
-            <ul tabIndex={0} className="dropdown-content menu bg-base-100 rounded-box shadow-xl border border-base-300 z-50 w-44 p-2">
-              <li>
-                <button
-                  type="button"
-                  className="gap-2"
-                  onClick={() => {
-                    setIsImportOpen(true);
-                  }}
-                >
-                  <span className="opacity-70">⇪</span>
-                  <span className="flex-1 text-left">导入素材包</span>
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  className="gap-2"
-                  onClick={() => { void handleCreate(); }}
-                >
-                  <span className="opacity-70">＋</span>
-                  <span className="flex-1 text-left">新建素材箱</span>
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  className="gap-2"
-                  onClick={() => { void listQuery.refetch(); }}
-                >
-                  <span className="opacity-70">⟳</span>
-                  <span className="flex-1 text-left">刷新</span>
-                </button>
-              </li>
-            </ul>
+          <div className="flex items-center gap-1 opacity-90">
+            <PortalTooltip label="新建文件" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                disabled={!isValidId(activePackageId)}
+                onClick={() => { void handleToolbarNewFile(); }}
+                aria-label="新建文件"
+              >
+                <FilePlus className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label="新建文件夹" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                disabled={!isValidId(activePackageId)}
+                onClick={() => { void handleToolbarNewFolder(); }}
+                aria-label="新建文件夹"
+              >
+                <FolderPlus className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label="新建素材箱" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                onClick={() => { void handleCreate(); }}
+                aria-label="新建素材箱"
+              >
+                <Plus className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label="导入素材包" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                onClick={() => { setIsImportOpen(true); }}
+                aria-label="导入素材包"
+              >
+                <UploadSimple className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label="从我的素材包导入素材箱" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                onClick={() => { setIsImportFromMyOpen(true); }}
+                aria-label="从我的素材包导入"
+              >
+                <DownloadSimple className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label="刷新" placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                onClick={() => { void listQuery.refetch(); }}
+                aria-label="刷新"
+              >
+                <ArrowClockwise className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label={selectedNode?.kind === "package" ? "删除素材箱" : "先选中素材箱再删除"} placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                disabled={selectedNode?.kind !== "package"}
+                onClick={handleToolbarDelete}
+                aria-label="删除"
+              >
+                <TrashIcon className="size-4" />
+              </button>
+            </PortalTooltip>
+            <PortalTooltip label={selectedNode ? "展开到选中项" : "先选择一个节点"} placement="bottom">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                disabled={!selectedNode}
+                onClick={handleToolbarReveal}
+                aria-label="展开到选中项"
+              >
+                <CrosshairSimple className="size-4" />
+              </button>
+            </PortalTooltip>
           </div>
         )}
       </div>
 
       {!isCollapsed && (
-        <div className="rounded-lg border border-base-300 px-1 py-1 relative mx-2 mt-1 mb-1">
+        <div className="px-1 py-1 relative mx-2 mt-1 mb-1">
           {listQuery.isLoading && (
             <div className="px-2 py-2 text-xs text-base-content/60">加载中…</div>
           )}
@@ -434,32 +749,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                   useBackend={useBackend}
                   isExpanded={isExpanded}
                   onToggleExpanded={() => setExpandedId(isExpanded ? null : id)}
+                  selectedKey={selectedNode?.key ?? null}
+                  onSelectNode={(args) => {
+                    setSelectedNode(args);
+                  }}
+                  onRenamePackage={(record) => {
+                    void handleRename(record);
+                  }}
                 />
-                <div className="absolute top-1 right-1 hidden group-hover:flex items-center gap-1">
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void handleRename(pkg);
-                    }}
-                  >
-                    重命名
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs text-error"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setPendingDeleteId(id);
-                      setIsDeleteConfirmOpen(true);
-                    }}
-                  >
-                    删除
-                  </button>
-                </div>
               </div>
             );
           })}
@@ -481,6 +778,91 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                 void queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {isImportFromMyOpen && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 px-4" onMouseDown={closeImportFromMy}>
+          <div
+            className="w-full max-w-5xl h-[70vh] rounded-xl border border-base-300 bg-base-100 shadow-xl overflow-hidden flex flex-col"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+              <div className="text-sm font-semibold">从我的素材包导入素材箱</div>
+              <button type="button" className="btn btn-ghost btn-xs btn-square" aria-label="关闭" onClick={closeImportFromMy}>✕</button>
+            </div>
+
+            <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2">
+              <div className="border-b md:border-b-0 md:border-r border-base-300 min-h-0 flex flex-col">
+                <div className="p-3">
+                  <input
+                    className="input input-bordered input-sm w-full"
+                    placeholder="搜索素材箱…"
+                    value={myImportKeyword}
+                    onChange={(e) => setMyImportKeyword(e.target.value)}
+                  />
+                </div>
+                <div className="flex-1 min-h-0 overflow-auto px-2 pb-3">
+                  {myPackagesQuery.isLoading && (
+                    <div className="px-2 py-2 text-xs opacity-60">加载中…</div>
+                  )}
+                  {!myPackagesQuery.isLoading && filteredMyPackages.length === 0 && (
+                    <div className="px-2 py-2 text-xs opacity-60">暂无可导入的素材箱</div>
+                  )}
+                  {filteredMyPackages.map((pkg) => {
+                    const id = Number((pkg as any)?.packageId);
+                    const isSelected = selectedMyPackageId === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        className={`w-full text-left px-2 py-2 rounded-md text-sm ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+                        onClick={() => setSelectedMyPackageId(id)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <PackageIcon className="size-4 opacity-70" />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium truncate">{pkg?.name ?? `素材箱#${id}`}</div>
+                            <div className="text-xs opacity-60 truncate">{pkg?.description ?? ""}</div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="min-h-0 flex flex-col">
+                <div className="flex-1 min-h-0 overflow-auto p-4">
+                  {selectedMyPackage ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <PackageIcon className="size-5 opacity-70" />
+                        <div className="text-base font-semibold">{selectedMyPackage.name ?? "未命名素材箱"}</div>
+                      </div>
+                      <div className="text-sm opacity-70 whitespace-pre-wrap break-words">{selectedMyPackage.description ?? "暂无描述"}</div>
+                      <div className="text-xs opacity-60">
+                        导入后会生成局内素材箱副本，可独立编辑，不会发布到素材包广场。
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-sm opacity-60">左侧选择一个素材箱以查看详情并导入。</div>
+                  )}
+                </div>
+                <div className="border-t border-base-300 px-4 py-3 flex items-center justify-end gap-2">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={closeImportFromMy} disabled={isMyImporting}>取消</button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => { void runImportFromMy(); }}
+                    disabled={!selectedMyPackage || isMyImporting}
+                  >
+                    {isMyImporting ? "导入中…" : "导入到局内素材库"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
