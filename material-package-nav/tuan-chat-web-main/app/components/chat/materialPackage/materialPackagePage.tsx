@@ -208,7 +208,7 @@ export default function MaterialPackagePage() {
       onDrop={handleDropToMain}
     >
       <div className="w-full h-full">
-        <MaterialPackageSquareView activeSpaceId={activeSpaceId} />
+        <MaterialPackageSquareView activeSpaceId={activeSpaceId} spaces={orderedSpaces} onSelectSpace={setActiveSpaceId} />
       </div>
 
       {activePreview && (

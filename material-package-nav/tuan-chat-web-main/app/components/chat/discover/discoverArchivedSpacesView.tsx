@@ -3,7 +3,7 @@ import type { ApiResultPageBaseRespRepository } from "api/models/ApiResultPageBa
 import type { Repository } from "api/models/Repository";
 import type { Space } from "api/models/Space";
 
-import { CompassIcon, PackageIcon } from "@phosphor-icons/react";
+import { CompassIcon } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { tuanchat } from "api/instance";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -312,10 +312,10 @@ export default function DiscoverArchivedSpacesView({ mode }: DiscoverArchivedSpa
                 )
               : (
                   <>
-                    <div className="min-w-0">
-                      <div className="text-sm font-semibold truncate">{pageTitle}</div>
+                    <div className="shrink-0 min-w-0">
+                      <div className="text-sm font-semibold whitespace-nowrap">{pageTitle}</div>
                     </div>
-                    <div className="flex items-center justify-end gap-2 w-full">
+                    <div className="flex-1 flex justify-end">
                       <div className="relative w-full max-w-90">
                         <input
                           className="input input-sm input-bordered w-full rounded-full"
@@ -325,18 +325,6 @@ export default function DiscoverArchivedSpacesView({ mode }: DiscoverArchivedSpa
                           aria-label={mode === "my" ? "搜索我的归档仓库" : "搜索仓库"}
                         />
                       </div>
-                      {mode === "square" && (
-                        <div className="tooltip tooltip-bottom" data-tip="素材包广场">
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-square btn-sm"
-                            aria-label="前往素材包广场"
-                            onClick={() => navigate("/chat/material-package")}
-                          >
-                            <PackageIcon className="size-5 opacity-80" weight="bold" />
-                          </button>
-                        </div>
-                      )}
                     </div>
                   </>
                 )}

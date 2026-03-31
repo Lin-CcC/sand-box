@@ -1,8 +1,9 @@
 import type { MaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
-import { ArrowClockwise, PackageIcon, X } from "@phosphor-icons/react";
+import { PackageIcon, X } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import toast from "react-hot-toast";
 
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import { useScreenSize } from "@/components/common/customHooks/useScreenSize";
@@ -12,6 +13,8 @@ import { getMaterialPackage, getMaterialPackageSquare, importMaterialPackageToSp
 
 interface MaterialPackageSquareViewProps {
   activeSpaceId: number | null;
+  spaces?: Array<{ spaceId?: number | null; name?: string | null; description?: string | null }>;
+  onSelectSpace?: (spaceId: number) => void;
 }
 
 function normalizeText(value?: string) {
@@ -28,12 +31,22 @@ function toPackages(value: unknown): MaterialPackageRecord[] {
   return value.filter(Boolean) as MaterialPackageRecord[];
 }
 
-export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPackageSquareViewProps) {
+export default function MaterialPackageSquareView({ activeSpaceId, onSelectSpace, spaces }: MaterialPackageSquareViewProps) {
   const screenSize = useScreenSize();
   const isMobile = screenSize === "sm";
 
   const defaultUseBackend = !(import.meta.env.MODE === "test");
-  const [useBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
+  const [useBackend, setUseBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      const next = Boolean(detail?.useBackend);
+      setUseBackend(next);
+    };
+    window.addEventListener("tc:material-package:use-backend-changed", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:use-backend-changed", handler as EventListener);
+  }, [setUseBackend]);
 
   const listQueryKey = buildMaterialPackageSquareQueryKey(useBackend);
   const packagesQuery = useQuery({
@@ -77,26 +90,48 @@ export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPac
   const isDetailOpen = isValidId(selectedPackageId);
 
   const [isImporting, setIsImporting] = useState(false);
-  const handleImport = useCallback(async () => {
-    if (!isValidId(selectedPackageId))
-      return;
-    if (!isValidId(activeSpaceId)) {
-      alert("请先选择一个空间后再导入。");
+  const [isPickSpaceOpen, setIsPickSpaceOpen] = useState(false);
+  const [pendingImportPackageId, setPendingImportPackageId] = useState<number | null>(null);
+
+  const closePickSpace = useCallback(() => {
+    setIsPickSpaceOpen(false);
+    setPendingImportPackageId(null);
+  }, []);
+
+  const runImport = useCallback(async (args: { packageId: number; spaceId: number }) => {
+    if (!useBackend) {
+      toast.success("mock：已模拟导入到局内（不写入后端）。");
+      closePickSpace();
       return;
     }
     setIsImporting(true);
     try {
-      await importMaterialPackageToSpace(selectedPackageId, { spaceId: activeSpaceId });
-      alert("导入成功。");
+      await importMaterialPackageToSpace(args.packageId, { spaceId: args.spaceId });
+      toast.success("已导入到当前局内（Space）。");
+      closePickSpace();
     }
     catch (error) {
       const message = error instanceof Error ? error.message : "导入失败。";
-      alert(message);
+      toast.error(message);
     }
     finally {
       setIsImporting(false);
     }
-  }, [activeSpaceId, selectedPackageId]);
+  }, [closePickSpace, useBackend]);
+
+  const handleImport = useCallback(async () => {
+    if (!isValidId(selectedPackageId))
+      return;
+
+    const available = Array.isArray(spaces) ? spaces.filter(s => isValidId(s?.spaceId)) : [];
+    if (!available.length) {
+      toast("当前没有可用的空间，请先回到聊天创建/选择空间。", { icon: "ℹ️" });
+      return;
+    }
+
+    setPendingImportPackageId(selectedPackageId);
+    setIsPickSpaceOpen(true);
+  }, [runImport, selectedPackageId, spaces, useBackend]);
 
   const closeDetail = useCallback(() => {
     setSelectedPackageId(null);
@@ -166,7 +201,7 @@ export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPac
               disabled={isImporting || !isValidId(selectedPackageId)}
               onClick={handleImport}
             >
-              {isImporting ? "正在导入…" : "导入到当前空间"}
+              {useBackend ? (isImporting ? "正在导入…" : "选择空间并导入") : "选择空间（演示）"}
             </button>
           </>
         )}
@@ -186,10 +221,10 @@ export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPac
         <div className="flex-1 h-full overflow-y-auto">
           <div className="sticky top-0 z-20 bg-base-200 border-t border-b border-gray-300 dark:border-gray-700">
             <div className="flex items-center justify-between gap-4 px-6 h-12">
-              <div className="min-w-0">
-                <div className="text-sm font-semibold truncate">素材包广场</div>
+              <div className="shrink-0 min-w-0">
+                <div className="text-sm font-semibold whitespace-nowrap">素材包广场</div>
               </div>
-              <div className="flex items-center justify-end gap-2 w-full">
+              <div className="flex-1 flex justify-end">
                 <div className="relative w-full max-w-90">
                   <input
                     className="input input-sm input-bordered w-full rounded-full"
@@ -199,15 +234,6 @@ export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPac
                     aria-label="搜索素材包"
                   />
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-square btn-sm"
-                  onClick={() => packagesQuery.refetch()}
-                  aria-label="刷新素材包广场"
-                  title="刷新"
-                >
-                  <ArrowClockwise className="size-5 opacity-80" />
-                </button>
               </div>
             </div>
           </div>
@@ -328,6 +354,62 @@ export default function MaterialPackageSquareView({ activeSpaceId }: MaterialPac
       {isMobile && isDetailOpen && (
         <div className="fixed inset-0 z-[90] bg-base-100">
           {detailPanel}
+        </div>
+      )}
+
+      {isPickSpaceOpen && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40 px-4" onMouseDown={closePickSpace}>
+          <div
+            className={`w-full ${isMobile ? "max-w-sm" : "max-w-lg"} rounded-xl border border-base-300 bg-base-100 shadow-xl`}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold truncate">选择要导入的空间</div>
+                <div className="mt-0.5 text-[11px] text-base-content/60 truncate">导入后会生成局内素材包副本，可独立编辑，不会发布到素材包广场。</div>
+              </div>
+              <button type="button" className="btn btn-ghost btn-sm btn-square" onClick={closePickSpace} aria-label="关闭">
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto p-3">
+              <div className="space-y-2">
+                {(Array.isArray(spaces) ? spaces : []).filter(s => isValidId(s?.spaceId)).map((space) => {
+                  const sid = Number(space.spaceId);
+                  const label = String(space.name ?? `空间 #${sid}`);
+                  const desc = String(space.description ?? "").trim();
+                  return (
+                    <button
+                      key={sid}
+                      type="button"
+                      className="w-full text-left rounded-lg border border-base-300 bg-base-100 px-3 py-2 hover:bg-base-200/40 disabled:opacity-60"
+                      disabled={isImporting || !isValidId(pendingImportPackageId)}
+                      onClick={() => {
+                        onSelectSpace?.(sid);
+                        if (isValidId(pendingImportPackageId))
+                          void runImport({ packageId: pendingImportPackageId, spaceId: sid });
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">{label}</div>
+                          <div className="mt-0.5 text-[11px] text-base-content/60 truncate">{desc || `Space ID ${sid}`}</div>
+                        </div>
+                        <div className="text-[11px] text-base-content/50">{`#${sid}`}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
+              <button type="button" className="btn btn-sm btn-outline" onClick={closePickSpace} disabled={isImporting}>
+                取消
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

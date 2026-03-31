@@ -1857,7 +1857,11 @@ export default function MaterialPackageNavPanel({
             <button
               type="button"
               className="btn btn-ghost btn-xs"
-              onClick={() => setUseBackend(!useBackend)}
+              onClick={() => {
+                const next = !useBackend;
+                setUseBackend(next);
+                window.dispatchEvent(new CustomEvent("tc:material-package:use-backend-changed", { detail: { useBackend: next } }));
+              }}
               aria-pressed={useBackend}
               title={useBackend ? "切换到 mock（不请求后端）" : "切换到后端（会发起请求）"}
             >
