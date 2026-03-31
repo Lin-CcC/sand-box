@@ -273,7 +273,7 @@ export default function ChatSpaceSidebar({
                   onSelectSpace(space.spaceId ?? -1);
                 }
               }}
-              isActive={!isDiscoverMode && activeSpaceId === space.spaceId}
+              isActive={!isDiscoverMode && !isMaterialPackageMode && activeSpaceId === space.spaceId}
             >
             </SpaceButton>
           </div>

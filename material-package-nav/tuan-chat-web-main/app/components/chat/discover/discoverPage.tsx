@@ -125,7 +125,7 @@ export default function DiscoverPage({ mode }: DiscoverPageProps) {
   const setChatLeftPanelWidth = useDrawerPreferenceStore(state => state.setChatLeftPanelWidth);
 
   const leftDrawerToggleLabel = isOpenLeftDrawer ? "收起侧边栏" : "展开侧边栏";
-  const shouldShowLeftDrawerToggle = screenSize === "sm" && !isOpenLeftDrawer;
+  const shouldShowLeftDrawerToggle = screenSize === "sm";
 
   return (
     <SpaceContext value={spaceContextValue}>

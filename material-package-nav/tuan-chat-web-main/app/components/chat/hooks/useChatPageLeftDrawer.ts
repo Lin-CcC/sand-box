@@ -33,6 +33,11 @@ export default function useChatPageLeftDrawer({
     if (mobileStateKey && mobileDrawerStateCache.has(mobileStateKey)) {
       return Boolean(mobileDrawerStateCache.get(mobileStateKey));
     }
+    // Standalone pages (discover / material-package) don't have :spaceId/:roomId params.
+    // Default to closed so the main content is visible immediately on mobile.
+    if (mobileStateKey && !urlSpaceId && !urlRoomId) {
+      return false;
+    }
     return !(urlSpaceId && urlRoomId) || (!urlRoomId && isPrivateChatMode) || !isPrivateChatMode;
   });
 

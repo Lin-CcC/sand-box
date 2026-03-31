@@ -260,6 +260,16 @@ export default function ChatFrameList({
   const renderDebugRef = useRef<{ renderCount: number; keys: string[] }>({ renderCount: 0, keys: [] });
 
   useEffect(() => {
+    if (!import.meta.env.DEV)
+      return;
+    try {
+      if (localStorage.getItem("tc:debug:msg-render") !== "1")
+        return;
+    }
+    catch {
+      return;
+    }
+
     const nextKeys = historyMessages.map((item, index) => computeItemKey(index, item));
     const prevKeys = renderDebugRef.current.keys;
     let changedKeyCount = 0;
@@ -273,6 +283,8 @@ export default function ChatFrameList({
       renderCount: renderDebugRef.current.renderCount + 1,
       keys: nextKeys,
     };
+    // Debug only (opt-in): localStorage tc:debug:msg-render=1
+    // eslint-disable-next-line no-console
     console.log("[TC_MSG_RENDER]", {
       renderCount: renderDebugRef.current.renderCount,
       messageLength: historyMessages.length,
