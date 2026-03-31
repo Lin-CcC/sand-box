@@ -269,8 +269,14 @@ export default function ChatSpaceSidebar({
                 if (isDraggingRef.current) {
                   return;
                 }
+                const sid = space.spaceId ?? -1;
+                // In discover/material-package pages, clicking the current space should still navigate back to chat.
+                if (isDiscoverMode || isMaterialPackageMode) {
+                  onSelectSpace(sid);
+                  return;
+                }
                 if (activeSpaceId !== space.spaceId) {
-                  onSelectSpace(space.spaceId ?? -1);
+                  onSelectSpace(sid);
                 }
               }}
               isActive={!isDiscoverMode && !isMaterialPackageMode && activeSpaceId === space.spaceId}
