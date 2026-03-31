@@ -2,7 +2,7 @@ import type { FeedWithStatsResponse } from "api/models/FeedWithStatsResponse";
 
 import { useQuery } from "@tanstack/react-query";
 import { tuanchat } from "api/instance";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import UserAvatarComponent from "@/components/common/userAvatar";
 import { useGlobalContext } from "@/components/globalContextProvider";
@@ -76,6 +76,7 @@ export default function ChatDiscoverNavPanel({ onCloseLeftDrawer, onToggleLeftDr
   const navigate = useNavigate();
   const globalContext = useGlobalContext();
   const currentUserId = globalContext.userId ?? -1;
+  const shouldLogDebug = import.meta.env.DEV || import.meta.env.MODE === "test";
 
   const [expandedEntry, setExpandedEntry] = useState<DiscoverEntryKind | null>(null);
   const toggleExpandedEntry = useCallback((next: DiscoverEntryKind) => {
@@ -96,6 +97,41 @@ export default function ChatDiscoverNavPanel({ onCloseLeftDrawer, onToggleLeftDr
     staleTime: 60000,
     retry: 0,
   });
+
+  useEffect(() => {
+    if (!shouldLogDebug)
+      return;
+
+    const payload: any = repositoryFollowingQuery.data;
+    if (!payload) {
+      if (repositoryFollowingQuery.isError) {
+        console.debug("[discover-following-updates] query error", repositoryFollowingQuery.error);
+      }
+      return;
+    }
+
+    const list: any[] = payload?.data?.list;
+    const types = new Map<number, number>();
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        const t = Number(item?.type);
+        if (Number.isFinite(t))
+          types.set(t, (types.get(t) ?? 0) + 1);
+      }
+    }
+    const first = Array.isArray(list) ? list[0] : null;
+    const firstResponse = first?.response;
+    const firstResponseKeys = firstResponse && typeof firstResponse === "object" ? Object.keys(firstResponse).slice(0, 12) : [];
+
+    console.debug("[discover-following-updates] payload", {
+      success: payload?.success,
+      errCode: payload?.errCode,
+      errMsg: payload?.errMsg,
+      listLen: Array.isArray(list) ? list.length : null,
+      types: Object.fromEntries(types.entries()),
+      first: first ? { type: first?.type, responseKeys: firstResponseKeys, repositoryId: firstResponse?.repositoryId, userId: firstResponse?.userId } : null,
+    });
+  }, [repositoryFollowingQuery.data, repositoryFollowingQuery.error, repositoryFollowingQuery.isError, shouldLogDebug]);
 
   const repositoryUpdates = useMemo<FollowingUpdateItem[]>(() => {
     const list = repositoryFollowingQuery.data?.data?.list ?? [];
