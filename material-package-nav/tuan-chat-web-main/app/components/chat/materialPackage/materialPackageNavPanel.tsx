@@ -1500,50 +1500,51 @@ export default function MaterialPackageNavPanel({
             </button>
           </div>
 
-            <div className="space-y-2">
+          <div className="space-y-2">
+            <div className="sticky top-0 z-20 -mx-3 px-3 py-2 bg-base-200/95 backdrop-blur border-b border-base-300">
               <div className="px-1 flex items-center justify-between gap-2 group">
-                <button
-                  type="button"
-                  className="text-[11px] font-semibold tracking-wider text-base-content/50 hover:text-base-content/70 active:text-base-content/80 select-none"
-                  onClick={() => setToolbarPinned(!toolbarPinned)}
-                  aria-pressed={toolbarPinned}
-                  title={toolbarPinned ? "隐藏工具栏（仍可悬浮显示）" : "固定显示工具栏"}
-                >
-                  TUAN-CHAT
-                </button>
-                <div
-                  className={`flex items-center gap-1 transition-opacity ${toolbarPinned ? "opacity-90" : "opacity-0 pointer-events-none group-hover:opacity-70 group-hover:pointer-events-auto focus-within:opacity-90 focus-within:pointer-events-auto"}`}
-                >
+                  <button
+                    type="button"
+                    className="text-[11px] font-semibold tracking-wider text-base-content/50 hover:text-base-content/70 active:text-base-content/80 select-none"
+                    onClick={() => setToolbarPinned(!toolbarPinned)}
+                    aria-pressed={toolbarPinned}
+                    title={toolbarPinned ? "隐藏工具栏（仍可悬浮显示）" : "固定显示工具栏"}
+                  >
+                    TUAN-CHAT
+                  </button>
+                  <div
+                    className={`flex items-center gap-1 transition-opacity ${toolbarPinned ? "opacity-90" : "opacity-0 pointer-events-none group-hover:opacity-70 group-hover:pointer-events-auto focus-within:opacity-90 focus-within:pointer-events-auto"}`}
+                  >
                   <PortalTooltip label="新建文件" placement="bottom">
                     <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFile} aria-label="新建文件">
                       <FilePlus className="size-4" />
                     </button>
                   </PortalTooltip>
-                <PortalTooltip label="新建文件夹" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFolder} aria-label="新建文件夹">
-                    <FolderPlus className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label="新建素材箱" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" onClick={handleToolbarNewPackage} aria-label="新建素材箱">
-                    <Plus className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label="本地导入" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarImport} aria-label="本地导入">
-                    <UploadSimple className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label="刷新" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" onClick={handleToolbarRefresh} aria-label="刷新">
-                    <ArrowClockwise className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label={selectedNode ? "删除" : "先选择一个节点再删除"} placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={!selectedNode} onClick={handleToolbarDelete} aria-label="删除">
-                    <TrashIcon className="size-4" />
-                  </button>
-                </PortalTooltip>
+                  <PortalTooltip label="新建文件夹" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFolder} aria-label="新建文件夹">
+                      <FolderPlus className="size-4" />
+                    </button>
+                  </PortalTooltip>
+                  <PortalTooltip label="新建素材箱" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" onClick={handleToolbarNewPackage} aria-label="新建素材箱">
+                      <Plus className="size-4" />
+                    </button>
+                  </PortalTooltip>
+                  <PortalTooltip label="本地导入" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarImport} aria-label="本地导入">
+                      <UploadSimple className="size-4" />
+                    </button>
+                  </PortalTooltip>
+                  <PortalTooltip label="刷新" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" onClick={handleToolbarRefresh} aria-label="刷新">
+                      <ArrowClockwise className="size-4" />
+                    </button>
+                  </PortalTooltip>
+                  <PortalTooltip label={selectedNode ? "删除" : "先选择一个节点再删除"} placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={!selectedNode} onClick={handleToolbarDelete} aria-label="删除">
+                      <TrashIcon className="size-4" />
+                    </button>
+                  </PortalTooltip>
                   <PortalTooltip label="展开到选中项" placement="bottom">
                     <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarReveal} aria-label="展开到选中项">
                       <CrosshairSimple className="size-4" />
@@ -1551,6 +1552,7 @@ export default function MaterialPackageNavPanel({
                   </PortalTooltip>
                 </div>
               </div>
+            </div>
 
             <div ref={treeItemsRef} data-role="material-package-tree-items">
               <input ref={importInputRef} type="file" className="hidden" multiple onChange={handleImportChange} />
