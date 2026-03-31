@@ -1,6 +1,6 @@
 import type { MaterialItemNode, MaterialPackageContent, MaterialPackageRecord, SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -9,14 +9,17 @@ import ConfirmModal from "@/components/common/comfirmModel";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import PortalTooltip from "@/components/common/portalTooltip";
 import { buildEmptyMaterialPackageContent } from "@/components/chat/materialPackage/materialPackageDraft";
-import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
+import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
+import { getMaterialPreviewDragData, getMaterialPreviewDragOrigin, isMaterialPreviewDrag, setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
+import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
-import { draftCreateFolder, draftCreateMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
+import { draftCreateFolder, draftCreateMaterial, draftRenameFolder, draftRenameMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
 import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { findMockPackageById } from "@/components/chat/materialPackage/materialPackageMockStore";
+import { nowIso, readSpaceMockPackages, writeSpaceMockPackages } from "@/components/chat/materialPackage/spaceMaterialMockStore";
 import { ArrowClockwise, CrosshairSimple, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
   createSpaceMaterialPackage,
@@ -50,35 +53,12 @@ function buildMyPackagesQueryKey(useBackend: boolean) {
   return ["myMaterialPackages", useBackend] as const;
 }
 
-type SpaceMaterialMockState = Record<string, SpaceMaterialPackageRecord[]>;
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
 function readMockPackages(spaceId: number): SpaceMaterialPackageRecord[] {
-  try {
-    const raw = localStorage.getItem("tc:space-material-packages:mock");
-    const parsed = raw ? JSON.parse(raw) as SpaceMaterialMockState : {};
-    const list = parsed?.[String(spaceId)];
-    return Array.isArray(list) ? list : [];
-  }
-  catch {
-    return [];
-  }
+  return readSpaceMockPackages(spaceId);
 }
 
 function writeMockPackages(spaceId: number, next: SpaceMaterialPackageRecord[]) {
-  try {
-    const raw = localStorage.getItem("tc:space-material-packages:mock");
-    const parsed = raw ? JSON.parse(raw) as SpaceMaterialMockState : {};
-    const base: SpaceMaterialMockState = (parsed && typeof parsed === "object") ? parsed : {};
-    base[String(spaceId)] = next;
-    localStorage.setItem("tc:space-material-packages:mock", JSON.stringify(base));
-  }
-  catch {
-    // ignore
-  }
+  writeSpaceMockPackages(spaceId, next);
 }
 
 function makeFolderToken(name: string) {
@@ -100,7 +80,15 @@ function SpaceMaterialTree({
   onToggleExpanded,
   selectedKey,
   onSelectNode,
-  onRenamePackage,
+  onOpenPreview,
+  inlineRename,
+  inlineRenameInputRef,
+  inlineRenameMeasureRef,
+  inlineRenameWidthPx,
+  onStartInlineRename,
+  onDraftInlineRename,
+  onCommitInlineRename,
+  onCloseInlineRename,
 }: {
   record: SpaceMaterialPackageRecord;
   useBackend: boolean;
@@ -108,9 +96,32 @@ function SpaceMaterialTree({
   onToggleExpanded: () => void;
   selectedKey: string | null;
   onSelectNode: (args: { kind: "package" | "folder" | "material"; key: string; packageId: number }) => void;
-  onRenamePackage: (record: SpaceMaterialPackageRecord) => void;
+  onOpenPreview: (payload: MaterialPreviewPayload, hintPosition: { x: number; y: number } | null) => void;
+  inlineRename: null | {
+    kind: "package" | "folder" | "material";
+    key: string;
+    spacePackageId: number;
+    folderPath: string[];
+    fromName: string;
+    draft: string;
+    saving: boolean;
+  };
+  inlineRenameInputRef: React.RefObject<HTMLInputElement | null>;
+  inlineRenameMeasureRef: React.RefObject<HTMLSpanElement | null>;
+  inlineRenameWidthPx: number;
+  onStartInlineRename: (args: {
+    kind: "package" | "folder" | "material";
+    key: string;
+    spacePackageId: number;
+    folderPath: string[];
+    name: string;
+  }) => void;
+  onDraftInlineRename: (draft: string) => void;
+  onCommitInlineRename: () => void;
+  onCloseInlineRename: () => void;
 }) {
   const spacePackageId = Number(record.spacePackageId);
+  const isEditingRoot = inlineRename?.key === `root:${spacePackageId}`;
   const query = useQuery({
     enabled: isExpanded && isValidId(spacePackageId) && useBackend,
     queryKey: buildDetailQueryKey(spacePackageId, useBackend),
@@ -138,6 +149,7 @@ function SpaceMaterialTree({
         const payloadPath = [...folderPath.map(makeFolderToken), makeFolderToken(node.name)];
         const nodeKey = `folder:${spacePackageId}:${payloadPath.join("/")}`;
         const isCollapsed = Boolean(collapsedFolderKey[nodeKey]);
+        const isEditingName = inlineRename?.key === nodeKey;
         return (
           <div key={key}>
             <div
@@ -148,6 +160,7 @@ function SpaceMaterialTree({
                 e.dataTransfer.effectAllowed = "copy";
                 setMaterialPreviewDragData(e.dataTransfer, {
                   scope: "space",
+                  spaceId: record.spaceId,
                   kind: "folder",
                   packageId: spacePackageId,
                   label: node.name,
@@ -157,6 +170,21 @@ function SpaceMaterialTree({
               }}
               onClick={() => {
                 onSelectNode({ kind: "folder", key: nodeKey, packageId: spacePackageId });
+              }}
+              onDoubleClick={(e) => {
+                const target = e.target as HTMLElement | null;
+                if (target?.closest?.("[data-inline-rename='1']")) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!inlineRename || inlineRename.key !== nodeKey) {
+                    onStartInlineRename({ kind: "folder", key: nodeKey, spacePackageId, folderPath: nextPath, name: node.name });
+                  }
+                  return;
+                }
+                onOpenPreview(
+                  { scope: "space", spaceId: record.spaceId, kind: "folder", packageId: spacePackageId, label: node.name, path: payloadPath },
+                  { x: Math.max(8, e.clientX - 80), y: Math.max(8, e.clientY - 16) },
+                );
               }}
             >
               <div
@@ -171,12 +199,56 @@ function SpaceMaterialTree({
                     e.stopPropagation();
                     setCollapsedFolderKey(prev => ({ ...prev, [nodeKey]: !Boolean(prev[nodeKey]) }));
                   }}
+                  onDoubleClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
                   title={isCollapsed ? "展开" : "折叠"}
                 >
                   <ChevronDown className={`size-4 opacity-80 ${isCollapsed ? "-rotate-90" : ""}`} />
                 </button>
                 <FolderIcon className="size-4 opacity-70" />
-                <span className="truncate">{node.name}</span>
+                {isEditingName ? (
+                  <div className="relative">
+                    <span
+                      ref={inlineRenameMeasureRef}
+                      className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                    >
+                      {inlineRename?.draft ?? ""}
+                    </span>
+                    <input
+                      ref={inlineRenameInputRef}
+                      value={inlineRename?.draft ?? ""}
+                      onChange={(e) => onDraftInlineRename(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          onCommitInlineRename();
+                        }
+                        else if (e.key === "Escape") {
+                          e.preventDefault();
+                          onCloseInlineRename();
+                        }
+                      }}
+                      onBlur={() => onCommitInlineRename()}
+                      className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                      style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                      disabled={Boolean(inlineRename?.saving)}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      data-inline-rename="1"
+                      aria-label="重命名文件夹"
+                    />
+                  </div>
+                ) : (
+                  <span
+                    className="inline-block max-w-full truncate"
+                    data-inline-rename="1"
+                    title="双击重命名"
+                  >
+                    {node.name}
+                  </span>
+                )}
               </div>
             </div>
             {!isCollapsed && renderNodes(children, nextPath, depth + 1)}
@@ -190,6 +262,7 @@ function SpaceMaterialTree({
           makeMaterialToken(String(node.name ?? "")),
         ];
         const nodeKey = `material:${spacePackageId}:${payloadPath.join("/")}`;
+        const isEditingName = inlineRename?.key === nodeKey;
         return (
           <div
             key={key}
@@ -201,6 +274,7 @@ function SpaceMaterialTree({
               e.dataTransfer.effectAllowed = "copy";
               setMaterialPreviewDragData(e.dataTransfer, {
                 scope: "space",
+                spaceId: record.spaceId,
                 kind: "material",
                 packageId: spacePackageId,
                 label: node.name,
@@ -211,9 +285,64 @@ function SpaceMaterialTree({
             onClick={() => {
               onSelectNode({ kind: "material", key: nodeKey, packageId: spacePackageId });
             }}
+            onDoubleClick={(e) => {
+              const target = e.target as HTMLElement | null;
+              if (target?.closest?.("[data-inline-rename='1']")) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!inlineRename || inlineRename.key !== nodeKey) {
+                  onStartInlineRename({ kind: "material", key: nodeKey, spacePackageId, folderPath, name: node.name });
+                }
+                return;
+              }
+              onOpenPreview(
+                { scope: "space", spaceId: record.spaceId, kind: "material", packageId: spacePackageId, label: node.name, path: payloadPath },
+                { x: Math.max(8, e.clientX - 80), y: Math.max(8, e.clientY - 16) },
+              );
+            }}
           >
             <FileImageIcon className="size-4 opacity-70" />
-            <span className="truncate">{node.name}</span>
+            {isEditingName ? (
+              <div className="relative">
+                <span
+                  ref={inlineRenameMeasureRef}
+                  className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                >
+                  {inlineRename?.draft ?? ""}
+                </span>
+                <input
+                  ref={inlineRenameInputRef}
+                  value={inlineRename?.draft ?? ""}
+                  onChange={(e) => onDraftInlineRename(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      onCommitInlineRename();
+                    }
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      onCloseInlineRename();
+                    }
+                  }}
+                  onBlur={() => onCommitInlineRename()}
+                  className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                  style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                  disabled={Boolean(inlineRename?.saving)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  data-inline-rename="1"
+                  aria-label="重命名文件"
+                />
+              </div>
+            ) : (
+              <span
+                className="inline-block max-w-full truncate"
+                data-inline-rename="1"
+                title="双击重命名"
+              >
+                {node.name}
+              </span>
+            )}
           </div>
         );
       }
@@ -230,6 +359,21 @@ function SpaceMaterialTree({
           onSelectNode({ kind: "package", key: `root:${spacePackageId}`, packageId: spacePackageId });
           onToggleExpanded();
         }}
+        onDoubleClick={(e) => {
+          const target = e.target as HTMLElement | null;
+          if (target?.closest?.("[data-inline-rename='1']")) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!inlineRename || inlineRename.key !== `root:${spacePackageId}`) {
+              onStartInlineRename({ kind: "package", key: `root:${spacePackageId}`, spacePackageId, folderPath: [], name: record.name });
+            }
+            return;
+          }
+          onOpenPreview(
+            { scope: "space", spaceId: record.spaceId, kind: "package", packageId: spacePackageId, label: record.name, path: [] },
+            { x: Math.max(8, e.clientX - 80), y: Math.max(8, e.clientY - 16) },
+          );
+        }}
       >
         <button
           type="button"
@@ -238,6 +382,10 @@ function SpaceMaterialTree({
             e.preventDefault();
             e.stopPropagation();
             onToggleExpanded();
+          }}
+          onDoubleClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
           }}
           title={isExpanded ? "折叠" : "展开"}
         >
@@ -248,17 +396,47 @@ function SpaceMaterialTree({
         >
           <span className="inline-flex items-center gap-1">
             <PackageIcon className="size-4 opacity-70" />
-            <span
-              className="truncate"
-              title="双击重命名"
-              onDoubleClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onRenamePackage(record);
-              }}
-            >
-              {record.name}
-            </span>
+            {isEditingRoot ? (
+              <div className="flex-1 min-w-0 relative">
+                <span
+                  ref={inlineRenameMeasureRef}
+                  className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                >
+                  {inlineRename?.draft ?? ""}
+                </span>
+                <input
+                  ref={inlineRenameInputRef}
+                  value={inlineRename?.draft ?? ""}
+                  onChange={(e) => onDraftInlineRename(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      onCommitInlineRename();
+                    }
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      onCloseInlineRename();
+                    }
+                  }}
+                  onBlur={() => onCommitInlineRename()}
+                  className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                  style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                  disabled={Boolean(inlineRename?.saving)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  data-inline-rename="1"
+                  aria-label="重命名素材箱"
+                />
+              </div>
+            ) : (
+              <span
+                className="inline-block max-w-full truncate"
+                data-inline-rename="1"
+                title="双击重命名"
+              >
+                {record.name}
+              </span>
+            )}
           </span>
         </div>
         <PortalTooltip label={nodeCount ? `${nodeCount}项` : "空"} placement="right">
@@ -285,14 +463,25 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const [useBackend, setUseBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
   const [collapsedBySpace, setCollapsedBySpace] = useLocalStorage<Record<string, boolean>>("tc:space-material-library:collapsed", {});
   const [toolbarPinnedBySpace, setToolbarPinnedBySpace] = useLocalStorage<Record<string, boolean>>("tc:space-material-library:toolbar-pinned", {});
+  const [collapsedFolderByKey, setCollapsedFolderByKey] = useLocalStorage<Record<string, boolean>>(`tc:space-material-library:folder-collapsed:${spaceId}`, {});
   const isCollapsed = Boolean(collapsedBySpace[String(spaceId)]);
   const toolbarPinned = Boolean(toolbarPinnedBySpace[String(spaceId)]);
+  const dockContextId = useMemo(() => `space-material:${spaceId}`, [spaceId]);
   const toggleCollapsed = useCallback(() => {
     setCollapsedBySpace(prev => ({ ...prev, [String(spaceId)]: !Boolean(prev[String(spaceId)]) }));
   }, [setCollapsedBySpace, spaceId]);
   const toggleToolbarPinned = useCallback(() => {
     setToolbarPinnedBySpace(prev => ({ ...prev, [String(spaceId)]: !Boolean(prev[String(spaceId)]) }));
   }, [setToolbarPinnedBySpace, spaceId]);
+  const toggleFolderCollapsed = useCallback((key: string) => {
+    setCollapsedFolderByKey(prev => ({ ...prev, [key]: !Boolean(prev[key]) }));
+  }, [setCollapsedFolderByKey]);
+
+  const clampInt = useCallback((value: number, min: number, max: number) => {
+    if (!Number.isFinite(value))
+      return min;
+    return Math.max(min, Math.min(max, Math.floor(value)));
+  }, []);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -320,12 +509,118 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isImportFromMyOpen, setIsImportFromMyOpen] = useState(false);
+  const [activePreview, setActivePreview] = useState<MaterialPreviewPayload | null>(null);
+  const [previewHintPos, setPreviewHintPos] = useState<{ x: number; y: number } | null>(null);
+  const [activePreviewInitialSize, setActivePreviewInitialSize] = useState<{ w: number; h: number } | null>(null);
+  const [dockedPreview, setDockedPreview] = useState<MaterialPreviewPayload | null>(null);
+  const [dockedIndex, setDockedIndex] = useState<number>(0);
+  const [dockHint, setDockHint] = useState<{ index: number; text: string } | null>(null);
+  const [dockLineTop, setDockLineTop] = useState<number | null>(null);
+  const [dockTipTop, setDockTipTop] = useState<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const treeItemsRef = useRef<HTMLDivElement | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
   const [myImportKeyword, setMyImportKeyword] = useState("");
   const [selectedMyPackageId, setSelectedMyPackageId] = useState<number | null>(null);
   const [isMyImporting, setIsMyImporting] = useState(false);
+  const [inlineRename, setInlineRename] = useState<
+    | null
+    | {
+      kind: "package" | "folder" | "material";
+      key: string;
+      spacePackageId: number;
+      folderPath: string[];
+      fromName: string;
+      draft: string;
+      saving: boolean;
+    }
+  >(null);
+  const inlineRenameInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineRenameMeasureRef = useRef<HTMLSpanElement | null>(null);
+  const [inlineRenameWidthPx, setInlineRenameWidthPx] = useState<number>(0);
+  useLayoutEffect(() => {
+    if (!inlineRename) {
+      setInlineRenameWidthPx(0);
+      return;
+    }
+    const el = inlineRenameMeasureRef.current;
+    if (!el)
+      return;
+    const measured = Math.ceil(el.getBoundingClientRect().width);
+    const next = Math.max(24, measured + 2);
+    setInlineRenameWidthPx(prev => (prev === next ? prev : next));
+  }, [inlineRename?.draft, inlineRename?.key]);
+
+  const openPreview = useCallback((payload: MaterialPreviewPayload, hintPosition: { x: number; y: number } | null, options?: { initialSize?: { w: number; h: number } | null }) => {
+    setActivePreview(payload);
+    setPreviewHintPos(hintPosition);
+    setActivePreviewInitialSize(options?.initialSize ?? null);
+  }, []);
+
+  const dockPreview = useCallback((payload: MaterialPreviewPayload, options?: { index?: number; placement?: "top" | "bottom" }) => {
+    setDockedPreview(payload);
+    if (typeof options?.index === "number" && Number.isFinite(options.index)) {
+      setDockedIndex(Math.max(0, Math.floor(options.index)));
+    }
+    else if (options?.placement === "bottom") {
+      setDockedIndex(Number.MAX_SAFE_INTEGER);
+    }
+    else {
+      setDockedIndex(0);
+    }
+    setActivePreview(null);
+    setPreviewHintPos(null);
+  }, []);
+
+  const undockPreview = useCallback(() => {
+    setDockedPreview(null);
+  }, []);
+
+  const closeInlineRename = useCallback(() => {
+    setInlineRename(null);
+  }, []);
+
+  useEffect(() => {
+    if (!inlineRename)
+      return;
+    const t = window.setTimeout(() => {
+      try {
+        inlineRenameInputRef.current?.focus?.();
+        inlineRenameInputRef.current?.select?.();
+      }
+      catch {
+        // ignore focus errors
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [inlineRename]);
+
+  const startInlineRename = useCallback((args: {
+    kind: "package" | "folder" | "material";
+    key: string;
+    spacePackageId: number;
+    folderPath: string[];
+    name: string;
+  }) => {
+    const trimmed = String(args.name ?? "").trim();
+    if (!trimmed)
+      return;
+    setInlineRename({
+      kind: args.kind,
+      key: args.key,
+      spacePackageId: args.spacePackageId,
+      folderPath: args.folderPath,
+      fromName: trimmed,
+      draft: trimmed,
+      saving: false,
+    });
+  }, []);
+
+  const draftInlineRename = useCallback((draft: string) => {
+    setInlineRename(prev => prev ? { ...prev, draft } : prev);
+  }, []);
 
   const activePackageId = useMemo(() => {
     if (selectedNode?.packageId)
@@ -334,6 +629,288 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       return expandedId;
     return null;
   }, [expandedId, selectedNode?.packageId]);
+
+  const expandedDetailQuery = useQuery({
+    enabled: useBackend && isValidId(expandedId),
+    queryKey: isValidId(expandedId) ? buildDetailQueryKey(expandedId, useBackend) : ["spaceMaterialPackage", "none", useBackend],
+    queryFn: () => getSpaceMaterialPackage(expandedId as number),
+    staleTime: 30 * 1000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+
+  type VisibleItem =
+    | { kind: "dockPreview"; key: "dock-preview"; payload: MaterialPreviewPayload }
+    | {
+      kind: "package";
+      key: string;
+      baseIndex: number;
+      isExpanded: boolean;
+      nodeCount: number;
+      record: SpaceMaterialPackageRecord;
+      payload: MaterialPreviewPayload;
+    }
+    | {
+      kind: "folder";
+      key: string;
+      baseIndex: number;
+      depth: number;
+      isCollapsed: boolean;
+      name: string;
+      payload: MaterialPreviewPayload;
+      folderPath: string[];
+    }
+    | {
+      kind: "material";
+      key: string;
+      baseIndex: number;
+      depth: number;
+      name: string;
+      payload: MaterialPreviewPayload;
+      folderPath: string[];
+    };
+
+  const baseVisibleItems = useMemo(() => {
+    const items: VisibleItem[] = [];
+
+    const expandedPackageId = isValidId(expandedId) ? expandedId : null;
+    const expandedDetailContent = useBackend && expandedPackageId != null
+      ? (expandedDetailQuery.data?.content ?? null)
+      : null;
+
+    const pushNode = (spacePackageId: number, node: any, folderPath: string[], pathTokens: string[], depth: number) => {
+      const indent = depth * 14;
+      if (node?.type === "folder") {
+        const nextFolderPath = [...folderPath, String(node.name ?? "")];
+        const nextTokens = [...pathTokens, makeFolderToken(String(node.name ?? ""))];
+        const key = `folder:${spacePackageId}:${nextTokens.join("/")}`;
+        const isCollapsedFolder = Boolean(collapsedFolderByKey[key]);
+        const payload: MaterialPreviewPayload = {
+          scope: "space",
+          spaceId,
+          kind: "folder",
+          packageId: spacePackageId,
+          label: String(node.name ?? ""),
+          path: nextTokens,
+        };
+        items.push({
+          kind: "folder",
+          key,
+          baseIndex: items.length,
+          depth: indent,
+          isCollapsed: isCollapsedFolder,
+          name: String(node.name ?? ""),
+          payload,
+          folderPath: nextFolderPath,
+        });
+        if (!isCollapsedFolder) {
+          const children = normalizeNodes(node.children);
+          for (const child of children) {
+            pushNode(spacePackageId, child, nextFolderPath, nextTokens, depth + 1);
+          }
+        }
+        return;
+      }
+
+      if (node?.type === "material") {
+        const name = String(node.name ?? "");
+        const tokens = [...pathTokens, makeMaterialToken(name)];
+        const key = `material:${spacePackageId}:${tokens.join("/")}`;
+        const payload: MaterialPreviewPayload = {
+          scope: "space",
+          spaceId,
+          kind: "material",
+          packageId: spacePackageId,
+          label: name,
+          path: tokens,
+        };
+        items.push({
+          kind: "material",
+          key,
+          baseIndex: items.length,
+          depth: indent,
+          name,
+          payload,
+          folderPath,
+        });
+      }
+    };
+
+    for (const pkg of packages) {
+      const spacePackageId = Number(pkg.spacePackageId ?? 0);
+      if (!isValidId(spacePackageId))
+        continue;
+
+      const isExpanded = expandedPackageId != null && Number(expandedPackageId) === Number(spacePackageId);
+      const content: MaterialPackageContent = isExpanded && expandedDetailContent
+        ? (expandedDetailContent as MaterialPackageContent)
+        : ((pkg.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent);
+
+      const rootNodes = normalizeNodes((content as any)?.root);
+      const rootKey = `root:${spacePackageId}`;
+      const label = String(pkg.name ?? `素材箱#${spacePackageId}`);
+      const payload: MaterialPreviewPayload = { scope: "space", spaceId, kind: "package", packageId: spacePackageId, label, path: [] };
+      items.push({
+        kind: "package",
+        key: rootKey,
+        baseIndex: items.length,
+        isExpanded,
+        nodeCount: rootNodes.length,
+        record: pkg,
+        payload,
+      });
+
+      if (!isExpanded)
+        continue;
+
+      for (const node of rootNodes) {
+        pushNode(spacePackageId, node, [], [], 1);
+      }
+    }
+
+    return items;
+  }, [collapsedFolderByKey, expandedDetailQuery.data?.content, expandedId, packages, spaceId, useBackend]);
+
+  const baseItemCount = baseVisibleItems.length;
+  const resolvedDockIndex = useMemo(() => clampInt(dockedIndex, 0, baseItemCount), [baseItemCount, clampInt, dockedIndex]);
+
+  const packageBottomInsertIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const item of baseVisibleItems) {
+      if (item.kind === "dockPreview")
+        continue;
+      const pkgId = Number((item as any)?.payload?.packageId ?? 0);
+      if (!isValidId(pkgId))
+        continue;
+      const last = map.get(pkgId);
+      if (typeof last !== "number" || !Number.isFinite(last) || item.baseIndex > last) {
+        map.set(pkgId, item.baseIndex);
+      }
+    }
+    // convert last baseIndex -> insert index
+    const insert = new Map<number, number>();
+    for (const [pkgId, lastIndex] of map.entries()) {
+      insert.set(pkgId, lastIndex + 1);
+    }
+    return insert;
+  }, [baseVisibleItems]);
+
+  const visibleItems = useMemo(() => {
+    if (!dockedPreview) {
+      return baseVisibleItems;
+    }
+    const next: VisibleItem[] = [...baseVisibleItems];
+    next.splice(resolvedDockIndex, 0, { kind: "dockPreview", key: "dock-preview", payload: dockedPreview });
+    return next;
+  }, [baseVisibleItems, dockedPreview, resolvedDockIndex]);
+
+  const clearDockHint = useCallback(() => {
+    setDockHint(null);
+    setDockLineTop(null);
+    setDockTipTop(null);
+  }, []);
+
+  const applyDockHint = useCallback((hint: { index: number; text: string }) => {
+    setDockHint(hint);
+    const scrollEl = scrollRef.current;
+    const itemsRoot = treeItemsRef.current;
+    if (!scrollEl || !itemsRoot) {
+      setDockLineTop(null);
+      setDockTipTop(null);
+      return;
+    }
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const rows = Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]"));
+    if (!rows.length) {
+      const top = hint.index <= 0 ? 44 : Math.max(72, scrollEl.scrollHeight - 24);
+      setDockLineTop(top);
+      setDockTipTop(top + 6);
+      return;
+    }
+    const last = rows[rows.length - 1]!;
+    const exact = rows.find(el => Number(el.dataset.baseIndex) === hint.index) ?? null;
+    const rect = (exact ?? last).getBoundingClientRect();
+    const y = exact ? rect.top : rect.bottom + 1;
+    const localY = y - scrollRect.top + scrollEl.scrollTop;
+    setDockLineTop(localY);
+    setDockTipTop(localY + 6);
+  }, []);
+
+  const computeInsertIndex = useCallback((clientY: number) => {
+    const root = treeItemsRef.current;
+    if (!root) {
+      return baseItemCount;
+    }
+    const rows = Array.from(root.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]"));
+    if (!rows.length) {
+      return 0;
+    }
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        const idx = Number(row.dataset.baseIndex ?? 0);
+        return Number.isFinite(idx) ? clampInt(idx, 0, baseItemCount) : 0;
+      }
+    }
+    return baseItemCount;
+  }, [baseItemCount, clampInt]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId !== dockContextId) {
+        return;
+      }
+      if (!detail || detail.visible === false) {
+        clearDockHint();
+        return;
+      }
+      if (typeof detail.index === "number" && Number.isFinite(detail.index)) {
+        const index = clampInt(Math.floor(detail.index), 0, baseItemCount);
+        const text = typeof detail.text === "string" ? detail.text : "插入到这里";
+        applyDockHint({ index, text });
+      }
+    };
+    window.addEventListener("tc:material-package:dock-hint", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-hint", handler as EventListener);
+  }, [applyDockHint, baseItemCount, clampInt, clearDockHint, dockContextId]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId !== dockContextId) {
+        return;
+      }
+      const index = typeof detail?.index === "number" && Number.isFinite(detail.index)
+        ? clampInt(Math.floor(detail.index), 0, baseItemCount)
+        : null;
+      if (index == null) {
+        return;
+      }
+      setDockedIndex(index);
+    };
+    window.addEventListener("tc:material-package:dock-move", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-move", handler as EventListener);
+  }, [baseItemCount, clampInt, dockContextId]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId !== dockContextId) {
+        return;
+      }
+      const payload = detail?.payload as MaterialPreviewPayload | null;
+      if (!payload)
+        return;
+      const index = typeof detail?.index === "number" && Number.isFinite(detail.index)
+        ? clampInt(Math.floor(detail.index), 0, baseItemCount)
+        : 0;
+      dockPreview(payload, { index });
+    };
+    window.addEventListener("tc:material-package:dock-request", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-request", handler as EventListener);
+  }, [baseItemCount, clampInt, dockContextId, dockPreview]);
 
   const closeDeleteConfirm = () => {
     setIsDeleteConfirmOpen(false);
@@ -390,6 +967,100 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
     await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(spacePackageId, useBackend) });
   }, [queryClient, spaceId, useBackend]);
+
+  const commitInlineRename = useCallback(async () => {
+    const snapshot = inlineRename;
+    if (!snapshot || snapshot.saving)
+      return;
+
+    const trimmed = snapshot.draft.trim();
+    if (!trimmed || trimmed === snapshot.fromName) {
+      closeInlineRename();
+      return;
+    }
+
+    setInlineRename(prev => prev ? { ...prev, saving: true } : prev);
+
+    try {
+      if (snapshot.kind === "package") {
+        const baseNames = packages
+          .filter(p => Number(p.spacePackageId) !== Number(snapshot.spacePackageId))
+          .map(p => p.name ?? "");
+        const finalName = autoRenameVsCodeLike(trimmed, baseNames);
+        if (finalName !== trimmed) {
+          window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+        }
+
+        if (!useBackend) {
+          const base = readMockPackages(spaceId);
+          writeMockPackages(spaceId, base.map(p => Number(p.spacePackageId) === Number(snapshot.spacePackageId) ? { ...p, name: finalName, updateTime: nowIso() } : p));
+          await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+        }
+        else {
+          await updateSpaceMaterialPackage({ spacePackageId: snapshot.spacePackageId, name: finalName });
+          await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+          await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(snapshot.spacePackageId, useBackend) });
+        }
+
+        closeInlineRename();
+        return;
+      }
+
+      const spacePackageId = snapshot.spacePackageId;
+      const baseContent = await loadPackageContent(spacePackageId);
+
+      if (snapshot.kind === "folder") {
+        const from = snapshot.fromName;
+        const parentPath = snapshot.folderPath.slice(0, -1);
+        const siblings = getFolderNodesAtPath(baseContent, parentPath);
+        const usedNames = siblings.map(n => n.name).filter(n => n !== from);
+        const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+        if (finalName !== trimmed) {
+          window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+        }
+
+        const nextContent = draftRenameFolder(baseContent, parentPath, from, finalName);
+        await savePackageContent(spacePackageId, nextContent);
+
+        const nextPathNames = [...parentPath, finalName];
+        const nextTokens = nextPathNames.map(makeFolderToken);
+        const nextKey = `folder:${spacePackageId}:${nextTokens.join("/")}`;
+        setSelectedNode({ kind: "folder", key: nextKey, packageId: spacePackageId });
+        setExpandedId(spacePackageId);
+        setTimeout(() => {
+          document.querySelector(`[data-node-key="${nextKey}"]`)?.scrollIntoView({ block: "nearest" });
+        }, 0);
+        closeInlineRename();
+        return;
+      }
+
+      const from = snapshot.fromName;
+      const siblings = getFolderNodesAtPath(baseContent, snapshot.folderPath);
+      const usedNames = siblings.map(n => n.name).filter(n => n !== from);
+      const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+      if (finalName !== trimmed) {
+        window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+      }
+
+      const existingNote = (siblings.find(n => n.type === "material" && n.name === from) as any)?.note ?? "";
+      const nextContent = draftRenameMaterial(baseContent, snapshot.folderPath, from, finalName, existingNote);
+      await savePackageContent(spacePackageId, nextContent);
+
+      const nextTokens = [...snapshot.folderPath.map(makeFolderToken), makeMaterialToken(finalName)];
+      const nextKey = `material:${spacePackageId}:${nextTokens.join("/")}`;
+      setSelectedNode({ kind: "material", key: nextKey, packageId: spacePackageId });
+      setExpandedId(spacePackageId);
+      setTimeout(() => {
+        document.querySelector(`[data-node-key="${nextKey}"]`)?.scrollIntoView({ block: "nearest" });
+      }, 0);
+      closeInlineRename();
+    }
+    catch (error) {
+      setInlineRename(prev => prev ? { ...prev, saving: false } : prev);
+      const message = error instanceof Error ? error.message : "重命名失败";
+      window.alert(message);
+    }
+  }, [closeInlineRename, inlineRename, loadPackageContent, packages, queryClient, savePackageContent, spaceId, useBackend]);
 
   const closeImportFromMy = useCallback(() => {
     setIsImportFromMyOpen(false);
@@ -602,35 +1273,376 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }
   }, [pendingDeleteId, queryClient, spaceId, useBackend]);
 
-  const handleRename = useCallback(async (record: SpaceMaterialPackageRecord) => {
-    const nextName = window.prompt("重命名局内素材箱", record.name) ?? "";
-    const trimmed = nextName.trim();
-    if (!trimmed || trimmed === record.name)
-      return;
-
-    if (!useBackend) {
-      const base = readMockPackages(spaceId);
-      writeMockPackages(spaceId, base.map(p => p.spacePackageId === record.spacePackageId ? { ...p, name: trimmed, updateTime: nowIso() } : p));
-      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
-      return;
+  const renderVisibleItem = useCallback((item: VisibleItem) => {
+    if (item.kind === "dockPreview") {
+      return (
+        <div
+          key={item.key}
+          className="px-1 rounded-md"
+          data-role="material-package-visible-row"
+          data-dock-preview="1"
+        >
+          <div className="rounded-lg border border-base-300 bg-base-200/40 overflow-hidden">
+            <div className="h-[360px]">
+              <MaterialPreviewFloat
+                variant="embedded"
+                payload={item.payload}
+                onClose={undockPreview}
+                onDock={dockPreview}
+                dragOrigin="docked"
+                dockContextId={dockContextId}
+                onPopout={(payload, options) => {
+                  undockPreview();
+                  openPreview(payload, options?.initialPosition ?? null, { initialSize: options?.initialSize ?? null });
+                }}
+                initialPosition={null}
+              />
+            </div>
+          </div>
+        </div>
+      );
     }
 
-    const toastId = `space-material-rename:${record.spacePackageId}`;
-    toast.loading("正在重命名…", { id: toastId });
-    try {
-      await updateSpaceMaterialPackage({ spacePackageId: record.spacePackageId, name: trimmed });
-      toast.success("已重命名", { id: toastId });
-      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
-      await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(record.spacePackageId, useBackend) });
+    if (item.kind === "package") {
+      const isSelected = selectedNode?.key === item.key;
+      const spacePackageId = Number(item.payload.packageId);
+      const isEditingName = inlineRename?.key === item.key;
+      return (
+        <div
+          key={item.key}
+          className="px-1 rounded-md"
+          data-role="material-package-visible-row"
+          data-base-index={item.baseIndex}
+          data-node-key={item.key}
+        >
+          <div
+            className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "copy";
+              setMaterialPreviewDragData(e.dataTransfer, item.payload);
+              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+            }}
+            onClick={() => {
+              setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
+              setExpandedId(item.isExpanded ? null : spacePackageId);
+            }}
+            onDoubleClick={(e) => {
+              const target = e.target as HTMLElement | null;
+              if (target?.closest?.("[data-inline-rename='1']")) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!inlineRename || inlineRename.key !== item.key) {
+                  startInlineRename({ kind: "package", key: item.key, spacePackageId, folderPath: [], name: item.record.name });
+                }
+                return;
+              }
+              const insertIndex = packageBottomInsertIndex.get(spacePackageId) ?? (item.baseIndex + 1);
+              dockPreview(item.payload, { index: insertIndex });
+              setTimeout(() => {
+                treeItemsRef.current?.querySelector<HTMLElement>("[data-dock-preview='1']")?.scrollIntoView({ block: "nearest" });
+              }, 0);
+            }}
+          >
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setExpandedId(item.isExpanded ? null : spacePackageId);
+              }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              title={item.isExpanded ? "折叠" : "展开"}
+            >
+              <ChevronDown className={`size-4 opacity-80 ${item.isExpanded ? "" : "-rotate-90"}`} />
+            </button>
+            <div className="flex-1 min-w-0 truncate">
+              <span className="inline-flex items-center gap-1">
+                <PackageIcon className="size-4 opacity-70" />
+                {isEditingName ? (
+                  <div className="flex-1 min-w-0 relative">
+                    <span
+                      ref={inlineRenameMeasureRef}
+                      className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                    >
+                      {inlineRename?.draft ?? ""}
+                    </span>
+                    <input
+                      ref={inlineRenameInputRef}
+                      value={inlineRename?.draft ?? ""}
+                      onChange={(e) => draftInlineRename(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void commitInlineRename();
+                        }
+                        else if (e.key === "Escape") {
+                          e.preventDefault();
+                          closeInlineRename();
+                        }
+                      }}
+                      onBlur={() => void commitInlineRename()}
+                      className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                      style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                      disabled={Boolean(inlineRename?.saving)}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      data-inline-rename="1"
+                      aria-label="重命名素材箱"
+                    />
+                  </div>
+                ) : (
+                  <span
+                    className="inline-block max-w-full truncate"
+                    data-inline-rename="1"
+                    title="双击重命名"
+                  >
+                    {item.record.name}
+                  </span>
+                )}
+              </span>
+            </div>
+            <PortalTooltip label={item.nodeCount ? `${item.nodeCount}项` : "空"} placement="right">
+              <span className="text-[11px] opacity-50 px-1">{item.nodeCount ? `${item.nodeCount}项` : "空"}</span>
+            </PortalTooltip>
+          </div>
+        </div>
+      );
     }
-    catch (error) {
-      const message = error instanceof Error ? error.message : "重命名失败";
-      toast.error(message, { id: toastId });
+
+    if (item.kind === "folder") {
+      const isSelected = selectedNode?.key === item.key;
+      const spacePackageId = Number(item.payload.packageId);
+      const isEditingName = inlineRename?.key === item.key;
+      return (
+        <div
+          key={item.key}
+          className="px-1 rounded-md"
+          data-role="material-package-visible-row"
+          data-base-index={item.baseIndex}
+          data-node-key={item.key}
+        >
+          <div
+            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            style={{ paddingLeft: 4 + item.depth }}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "copy";
+              setMaterialPreviewDragData(e.dataTransfer, item.payload);
+              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+            }}
+            onClick={() => {
+              setSelectedNode({ kind: "folder", key: item.key, packageId: spacePackageId });
+            }}
+            onDoubleClick={(e) => {
+              const target = e.target as HTMLElement | null;
+              if (target?.closest?.("[data-inline-rename='1']")) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!inlineRename || inlineRename.key !== item.key) {
+                  startInlineRename({ kind: "folder", key: item.key, spacePackageId, folderPath: item.folderPath, name: item.name });
+                }
+                return;
+              }
+              const insertIndex = packageBottomInsertIndex.get(spacePackageId) ?? (item.baseIndex + 1);
+              dockPreview(item.payload, { index: insertIndex });
+              setTimeout(() => {
+                treeItemsRef.current?.querySelector<HTMLElement>("[data-dock-preview='1']")?.scrollIntoView({ block: "nearest" });
+              }, 0);
+            }}
+          >
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleFolderCollapsed(item.key);
+              }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              title={item.isCollapsed ? "展开" : "折叠"}
+            >
+              <ChevronDown className={`size-4 opacity-80 ${item.isCollapsed ? "-rotate-90" : ""}`} />
+            </button>
+            <FolderIcon className="size-4 opacity-70" />
+            {isEditingName ? (
+              <div className="relative">
+                <span
+                  ref={inlineRenameMeasureRef}
+                  className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+                >
+                  {inlineRename?.draft ?? ""}
+                </span>
+                <input
+                  ref={inlineRenameInputRef}
+                  value={inlineRename?.draft ?? ""}
+                  onChange={(e) => draftInlineRename(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void commitInlineRename();
+                    }
+                    else if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeInlineRename();
+                    }
+                  }}
+                  onBlur={() => void commitInlineRename()}
+                  className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                  style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                  disabled={Boolean(inlineRename?.saving)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  data-inline-rename="1"
+                  aria-label="重命名文件夹"
+                />
+              </div>
+            ) : (
+              <span
+                className="inline-block max-w-full truncate"
+                data-inline-rename="1"
+                title="双击重命名"
+              >
+                {item.name}
+              </span>
+            )}
+          </div>
+        </div>
+      );
     }
-  }, [queryClient, spaceId, useBackend]);
+
+    const isSelected = selectedNode?.key === item.key;
+    const spacePackageId = Number(item.payload.packageId);
+    const isEditingName = inlineRename?.key === item.key;
+    return (
+      <div
+        key={item.key}
+        className="px-1 rounded-md"
+        data-role="material-package-visible-row"
+        data-base-index={item.baseIndex}
+        data-node-key={item.key}
+      >
+        <div
+          className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+          style={{ paddingLeft: 22 + item.depth }}
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.effectAllowed = "copy";
+            setMaterialPreviewDragData(e.dataTransfer, item.payload);
+            setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+          }}
+          onClick={() => {
+            setSelectedNode({ kind: "material", key: item.key, packageId: spacePackageId });
+          }}
+          onDoubleClick={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (target?.closest?.("[data-inline-rename='1']")) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!inlineRename || inlineRename.key !== item.key) {
+                startInlineRename({ kind: "material", key: item.key, spacePackageId, folderPath: item.folderPath, name: item.name });
+              }
+              return;
+            }
+            const insertIndex = packageBottomInsertIndex.get(spacePackageId) ?? (item.baseIndex + 1);
+            dockPreview(item.payload, { index: insertIndex });
+            setTimeout(() => {
+              treeItemsRef.current?.querySelector<HTMLElement>("[data-dock-preview='1']")?.scrollIntoView({ block: "nearest" });
+            }, 0);
+          }}
+        >
+          <FileImageIcon className="size-4 opacity-70" />
+          {isEditingName ? (
+            <div className="relative">
+              <span
+                ref={inlineRenameMeasureRef}
+                className="absolute left-0 top-0 invisible pointer-events-none whitespace-pre px-1 text-xs"
+              >
+                {inlineRename?.draft ?? ""}
+              </span>
+              <input
+                ref={inlineRenameInputRef}
+                value={inlineRename?.draft ?? ""}
+                onChange={(e) => draftInlineRename(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void commitInlineRename();
+                  }
+                  else if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeInlineRename();
+                  }
+                }}
+                onBlur={() => void commitInlineRename()}
+                className="h-6 w-auto max-w-full rounded-none border border-base-300 bg-base-100 px-1 text-xs focus:outline-none focus:border-info"
+                style={{ width: inlineRenameWidthPx ? `${inlineRenameWidthPx}px` : undefined }}
+                disabled={Boolean(inlineRename?.saving)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                data-inline-rename="1"
+                aria-label="重命名文件"
+              />
+            </div>
+          ) : (
+            <span
+              className="inline-block max-w-full truncate"
+              data-inline-rename="1"
+              title="双击重命名"
+            >
+              {item.name}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }, [closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, openPreview, selectedNode?.key, setCollapsedFolderByKey, startInlineRename, toggleFolderCollapsed, undockPreview]);
 
   return (
-    <div className="px-1 py-1 relative">
+    <div
+      className="px-1 py-1 relative"
+      data-role="material-package-dock-zone"
+      data-dock-context-id={dockContextId}
+      onDragOverCapture={(e) => {
+        e.preventDefault();
+        if (!isMaterialPreviewDrag(e.dataTransfer))
+          return;
+        const origin = getMaterialPreviewDragOrigin(e.dataTransfer) ?? "tree";
+        e.dataTransfer.dropEffect = origin === "docked" ? "move" : "copy";
+        const index = computeInsertIndex(e.clientY);
+        const baseText = index <= 0 ? "插入到顶部" : index >= baseItemCount ? "插入到底部" : "插入到这里";
+        applyDockHint({ index, text: `${baseText}（${index}/${baseItemCount}）` });
+      }}
+      onDragLeaveCapture={() => {
+        clearDockHint();
+      }}
+      onDropCapture={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const payload = getMaterialPreviewDragData(e.dataTransfer);
+        if (!payload)
+          return;
+        const origin = getMaterialPreviewDragOrigin(e.dataTransfer);
+        const index = dockHint?.index ?? baseItemCount;
+        clearDockHint();
+        if (origin === "docked") {
+          setDockedIndex(index);
+          return;
+        }
+        if (payload.scope !== "space" || Number(payload.spaceId) !== Number(spaceId)) {
+          toast.error("只能将本局内素材库的预览插入到该局内素材库中。");
+          return;
+        }
+        dockPreview(payload, { index });
+      }}
+    >
       <div className="flex items-center justify-between gap-2 px-2 py-1 text-xs font-medium opacity-80 select-none rounded-lg hover:bg-base-300/40 group">
         <button
           type="button"
@@ -761,39 +1773,62 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       </div>
 
       {!isCollapsed && (
-        <div className="px-1 py-1 relative mx-2 mt-1 mb-1">
-          {listQuery.isLoading && (
-            <div className="px-2 py-2 text-xs text-base-content/60">加载中…</div>
-          )}
+        <div
+          ref={scrollRef}
+          className="px-1 py-1 relative mx-2 mt-1 mb-1"
+          onScroll={() => {
+            if (dockHint) {
+              applyDockHint(dockHint);
+            }
+          }}
+        >
+          <div ref={treeItemsRef} data-role="material-package-tree-items">
+            {listQuery.isLoading && (
+              <div className="px-2 py-2 text-xs text-base-content/60">加载中…</div>
+            )}
 
-          {!listQuery.isLoading && packages.length === 0 && (
-            <div className="px-2 py-2 text-xs text-base-content/60">
-              暂无局内素材箱，点击右上角导入或新建。
+            {!listQuery.isLoading && baseItemCount === 0 && (
+              <div className="px-2 py-2 text-xs text-base-content/60">
+                暂无局内素材箱，点击右上角导入或新建。
+              </div>
+            )}
+
+            {!listQuery.isLoading && visibleItems.map(renderVisibleItem)}
+          </div>
+
+          {dockHint && dockLineTop != null && (
+            <div
+              className="pointer-events-none absolute left-3 right-3 h-0.5 rounded bg-info"
+              style={{ top: dockLineTop }}
+            />
+          )}
+          {dockHint && dockTipTop != null && (
+            <div
+              className="pointer-events-none absolute left-3 rounded-md border border-base-300 bg-base-100/80 px-2 py-0.5 text-[11px] text-base-content/80 backdrop-blur"
+              style={{ top: dockTipTop }}
+            >
+              {dockHint.text}
             </div>
           )}
-
-          {packages.map((pkg) => {
-            const id = Number(pkg.spacePackageId);
-            const isExpanded = expandedId === id;
-            return (
-              <div key={id} className="relative group">
-                <SpaceMaterialTree
-                  record={pkg}
-                  useBackend={useBackend}
-                  isExpanded={isExpanded}
-                  onToggleExpanded={() => setExpandedId(isExpanded ? null : id)}
-                  selectedKey={selectedNode?.key ?? null}
-                  onSelectNode={(args) => {
-                    setSelectedNode(args);
-                  }}
-                  onRenamePackage={(record) => {
-                    void handleRename(record);
-                  }}
-                />
-              </div>
-            );
-          })}
         </div>
+      )}
+
+      {activePreview && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[9997] pointer-events-none">
+          <div className="relative w-full h-full pointer-events-none">
+            <div className="relative w-full h-full pointer-events-auto">
+              <MaterialPreviewFloat
+                payload={activePreview}
+                onClose={() => { setActivePreview(null); setActivePreviewInitialSize(null); }}
+                onDock={dockPreview}
+                initialPosition={previewHintPos}
+                initialSize={activePreviewInitialSize}
+                dockContextId={dockContextId}
+              />
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {isImportOpen && (

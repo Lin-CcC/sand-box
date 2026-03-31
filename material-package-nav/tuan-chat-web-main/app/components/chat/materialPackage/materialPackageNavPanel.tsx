@@ -1388,10 +1388,14 @@ export default function MaterialPackageNavPanel({
 
   const baseItemCount = baseVisibleItems.length;
   const resolvedDockIndex = useMemo(() => clampInt(dockedIndex, 0, baseItemCount), [baseItemCount, dockedIndex]);
+  const dockContextId = "material-package";
 
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId != null && detail.contextId !== dockContextId) {
+        return;
+      }
       if (!detail || detail.visible === false) {
         clearDockHint();
         return;
@@ -1410,11 +1414,14 @@ export default function MaterialPackageNavPanel({
     };
     window.addEventListener("tc:material-package:dock-hint", handler as EventListener);
     return () => window.removeEventListener("tc:material-package:dock-hint", handler as EventListener);
-  }, [applyDockHint, baseItemCount, clearDockHint]);
+  }, [applyDockHint, baseItemCount, clearDockHint, dockContextId]);
 
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId != null && detail.contextId !== dockContextId) {
+        return;
+      }
       const index = typeof detail?.index === "number" && Number.isFinite(detail.index)
         ? clampInt(Math.floor(detail.index), 0, baseItemCount)
         : null;
@@ -1425,7 +1432,25 @@ export default function MaterialPackageNavPanel({
     };
     window.addEventListener("tc:material-package:dock-move", handler as EventListener);
     return () => window.removeEventListener("tc:material-package:dock-move", handler as EventListener);
-  }, [baseItemCount, onMoveDockedPreview]);
+  }, [baseItemCount, dockContextId, onMoveDockedPreview]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as any;
+      if (detail?.contextId !== dockContextId) {
+        return;
+      }
+      const payload = detail?.payload as MaterialPreviewPayload | null;
+      if (!payload)
+        return;
+      const index = typeof detail?.index === "number" && Number.isFinite(detail.index)
+        ? clampInt(Math.floor(detail.index), 0, baseItemCount)
+        : 0;
+      onDockPreview(payload, { index });
+    };
+    window.addEventListener("tc:material-package:dock-request", handler as EventListener);
+    return () => window.removeEventListener("tc:material-package:dock-request", handler as EventListener);
+  }, [baseItemCount, dockContextId, onDockPreview]);
 
   const visibleItems = useMemo(() => {
     if (!dockedPreview) {
@@ -1478,9 +1503,10 @@ export default function MaterialPackageNavPanel({
                 onClose={onUndockPreview}
                 onDock={onDockPreview}
                 dragOrigin="docked"
-                onPopout={(payload) => {
+                dockContextId={dockContextId}
+                onPopout={(payload, options) => {
                   onUndockPreview();
-                  onOpenPreview(payload, null);
+                  onOpenPreview(payload, options?.initialPosition ?? null);
                 }}
                 initialPosition={null}
               />
@@ -1788,6 +1814,7 @@ export default function MaterialPackageNavPanel({
     <div
       className="flex flex-col w-full h-full flex-1 min-h-0 min-w-0 rounded-tl-xl border-l border-t border-gray-300 dark:border-gray-700 bg-base-200 text-base-content"
       data-role="material-package-dock-zone"
+      data-dock-context-id={dockContextId}
       onDragOverCapture={(e) => {
         e.preventDefault();
         if (!isMaterialPreviewDrag(e.dataTransfer))

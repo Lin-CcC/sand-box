@@ -6,6 +6,8 @@ export type MaterialPackageScope = "global" | "space";
 export type MaterialPreviewPayload = {
   /** scope 缺省表示局外（global），兼容旧数据 */
   scope?: MaterialPackageScope;
+  /** scope=space 时，用于读取局内素材库数据 */
+  spaceId?: number;
   kind: "package" | "folder" | "material";
   /** 对 global：packageId；对 space：spacePackageId */
   packageId: number;
@@ -89,8 +91,10 @@ export function getMaterialPreviewDragData(dataTransfer: DataTransfer | null): M
       return null;
     const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
     const scope = parsed.scope === "space" || parsed.scope === "global" ? parsed.scope : undefined;
+    const spaceId = typeof parsed.spaceId === "number" && Number.isFinite(parsed.spaceId) && parsed.spaceId > 0 ? parsed.spaceId : undefined;
     return {
       ...(scope ? { scope } : {}),
+      ...(spaceId ? { spaceId } : {}),
       kind: parsed.kind,
       packageId: parsed.packageId,
       label: parsed.label,
@@ -118,8 +122,10 @@ export function getMaterialPreviewDragData(dataTransfer: DataTransfer | null): M
       return null;
     const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
     const scope = parsed.scope === "space" || parsed.scope === "global" ? parsed.scope : undefined;
+    const spaceId = typeof parsed.spaceId === "number" && Number.isFinite(parsed.spaceId) && parsed.spaceId > 0 ? parsed.spaceId : undefined;
     return {
       ...(scope ? { scope } : {}),
+      ...(spaceId ? { spaceId } : {}),
       kind: parsed.kind,
       packageId: parsed.packageId,
       label: parsed.label,

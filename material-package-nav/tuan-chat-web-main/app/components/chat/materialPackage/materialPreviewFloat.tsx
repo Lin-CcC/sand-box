@@ -3,6 +3,7 @@ import type {
   MaterialNode,
   MaterialPackageContent,
   MaterialPackageRecord,
+  SpaceMaterialPackageRecord,
 } from "@/components/materialPackage/materialPackageApi";
 import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
 
@@ -33,10 +34,16 @@ import {
   deleteMaterialPackage,
   getMaterialPackage,
   getMyMaterialPackages,
+  createSpaceMaterialPackage,
+  deleteSpaceMaterialPackage,
+  getSpaceMaterialPackage,
+  listSpaceMaterialPackages,
   updateMaterialPackage,
+  updateSpaceMaterialPackage,
 } from "@/components/materialPackage/materialPackageApi";
 import PortalTooltip from "@/components/common/portalTooltip";
 import { readMockPackages, writeMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
+import { nowIso, readSpaceMockPackages, writeSpaceMockPackages } from "@/components/chat/materialPackage/spaceMaterialMockStore";
 import type { MaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
@@ -62,9 +69,13 @@ interface MaterialPreviewFloatProps {
   payload: MaterialPreviewPayload;
   onClose: () => void;
   onDock: (payload: MaterialPreviewPayload, options?: { index?: number; placement?: "top" | "bottom" }) => void;
-  onPopout?: (payload: MaterialPreviewPayload) => void;
+  onPopout?: (payload: MaterialPreviewPayload, options?: { initialPosition?: { x: number; y: number } | null; initialSize?: { w: number; h: number } }) => void;
   dragOrigin?: MaterialPreviewDragOrigin;
   initialPosition?: { x: number; y: number } | null;
+  /** 仅对自由弹窗生效：用于从 embedded popout 时保持尺寸 */
+  initialSize?: { w: number; h: number } | null;
+  /** 用于隔离“目录插入提示线/插入位置”事件，避免多个目录面板互相干扰 */
+  dockContextId?: string;
 }
 
 type SelectedItem = { type: "folder" | "material"; name: string } | null;
@@ -77,6 +88,42 @@ type InlineEditState = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isValidId(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function buildSpacePreviewListQueryKey(spaceId: number, useBackend: boolean) {
+  return ["tc:mpf:space-material-packages", "list", spaceId, useBackend] as const;
+}
+
+function buildSpacePreviewDetailQueryKey(spacePackageId: number, useBackend: boolean) {
+  return ["tc:mpf:space-material-packages", "detail", spacePackageId, useBackend] as const;
+}
+
+function buildSpaceLibraryListQueryKey(spaceId: number, useBackend: boolean) {
+  return ["spaceMaterialPackages", spaceId, useBackend] as const;
+}
+
+function buildSpaceLibraryDetailQueryKey(spacePackageId: number, useBackend: boolean) {
+  return ["spaceMaterialPackage", spacePackageId, useBackend] as const;
+}
+
+function adaptSpaceRecord(record: SpaceMaterialPackageRecord): MaterialPackageRecord {
+  return {
+    packageId: Number(record.spacePackageId),
+    userId: Number(record.importedBy ?? 0),
+    name: record.name,
+    description: record.description ?? "",
+    coverUrl: record.coverUrl ?? null,
+    visibility: 1,
+    status: record.status,
+    content: record.content,
+    importCount: 0,
+    createTime: record.createTime,
+    updateTime: record.updateTime,
+  };
 }
 
 function isInlineClickTarget(target: EventTarget | null) {
@@ -201,6 +248,8 @@ export default function MaterialPreviewFloat({
   onPopout,
   dragOrigin,
   initialPosition,
+  initialSize,
+  dockContextId,
 }: MaterialPreviewFloatProps) {
   const isEmbedded = variant === "embedded";
   const isDockedEmbedded = isEmbedded && dragOrigin === "docked";
@@ -240,7 +289,13 @@ export default function MaterialPreviewFloat({
     const y = initialPosition.y ?? 32;
     return { x, y };
   });
-  const [shellSize, setShellSize] = useState(() => ({ w: 860, h: isEmbedded ? 360 : 420 }));
+  const [shellSize, setShellSize] = useState(() => {
+    const w = !isEmbedded && initialSize?.w && Number.isFinite(initialSize.w) ? Math.max(360, Math.round(initialSize.w)) : 860;
+    const h = isEmbedded
+      ? 360
+      : (!isEmbedded && initialSize?.h && Number.isFinite(initialSize.h) ? Math.max(360, Math.round(initialSize.h)) : 420);
+    return { w, h };
+  });
   const [isCoverMode, setIsCoverMode] = useState<boolean>(() => !isEmbedded && initialPosition == null);
 
   const setCoverMode = useCallback((next: boolean) => {
@@ -332,8 +387,57 @@ export default function MaterialPreviewFloat({
 
   const title = useMemo(() => payload.label, [payload.label]);
 
-  const computeDockInsertIndex = useCallback((clientY: number) => {
-    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+  const getDockContextRoot = useCallback(() => {
+    if (!dockContextId)
+      return document as ParentNode;
+    const escaped = typeof (CSS as any)?.escape === "function" ? (CSS as any).escape(dockContextId) : dockContextId.replace(/["\\]/g, "\\$&");
+    const el = document.querySelector(`[data-dock-context-id="${escaped}"]`);
+    return (el ?? document) as ParentNode;
+  }, [dockContextId]);
+
+  const getDockContextRootById = useCallback((contextId: string | null) => {
+    if (!contextId)
+      return document as ParentNode;
+    const escaped = typeof (CSS as any)?.escape === "function" ? (CSS as any).escape(contextId) : contextId.replace(/["\\]/g, "\\$&");
+    const el = document.querySelector(`[data-dock-context-id="${escaped}"]`);
+    return (el ?? document) as ParentNode;
+  }, []);
+
+  const queryWithinDockContext = useCallback((selector: string, options?: { includeSelf?: boolean }) => {
+    const root = getDockContextRoot();
+    const includeSelf = Boolean(options?.includeSelf);
+    if (includeSelf && root && (root as any).matches && (root as any).matches(selector)) {
+      return root as unknown as HTMLElement;
+    }
+    return (root as any).querySelector?.(selector) as HTMLElement | null;
+  }, [getDockContextRoot]);
+
+  const detectDockContextIdAtPoint = useCallback((clientX: number, clientY: number) => {
+    try {
+      const elements = document.elementsFromPoint(clientX, clientY);
+      for (const el of elements) {
+        if (!(el instanceof HTMLElement))
+          continue;
+        if (!el.hasAttribute("data-dock-context-id"))
+          continue;
+        if (el.getAttribute("data-role") !== "material-package-dock-zone")
+          continue;
+        const id = el.getAttribute("data-dock-context-id");
+        if (id && id.trim())
+          return id;
+      }
+    }
+    catch {
+      // ignore
+    }
+    return null;
+  }, []);
+
+  const hoverDockContextIdRef = useRef<string | null>(null);
+
+  const computeDockInsertIndexInContext = useCallback((contextId: string | null, clientY: number) => {
+    const root = getDockContextRootById(contextId);
+    const itemsRoot = (root as any).querySelector?.("[data-role='material-package-tree-items']") as HTMLElement | null;
     if (!itemsRoot) {
       return 0;
     }
@@ -356,32 +460,77 @@ export default function MaterialPreviewFloat({
     const lastIdx = Number(last.dataset.baseIndex ?? baseCount);
     const finalCount = Number.isFinite(lastIdx) ? lastIdx + 1 : baseCount;
     return clamp(finalCount, 0, finalCount);
+  }, [getDockContextRootById]);
+
+  const dispatchDockRequest = useCallback((contextId: string, index: number, dockPayload: MaterialPreviewPayload) => {
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-request", {
+      detail: { contextId, index, payload: dockPayload },
+    }));
   }, []);
 
+  const computeDockInsertIndex = useCallback((clientY: number) => {
+    const itemsRoot = queryWithinDockContext("[data-role='material-package-tree-items']") as HTMLElement | null;
+    if (!itemsRoot) {
+      return 0;
+    }
+    const rows = Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]"));
+    if (!rows.length) {
+      return 0;
+    }
+    const baseCount = rows.length;
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      if (clientY < mid) {
+        const idx = Number(row.dataset.baseIndex ?? 0);
+        if (!Number.isFinite(idx))
+          return 0;
+        return clamp(Math.floor(idx), 0, baseCount);
+      }
+    }
+    const last = rows[rows.length - 1]!;
+    const lastIdx = Number(last.dataset.baseIndex ?? baseCount);
+    const finalCount = Number.isFinite(lastIdx) ? lastIdx + 1 : baseCount;
+    return clamp(finalCount, 0, finalCount);
+  }, [queryWithinDockContext]);
+
   const dispatchDockHintByIndex = useCallback((clientY: number) => {
-    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+    const itemsRoot = queryWithinDockContext("[data-role='material-package-tree-items']") as HTMLElement | null;
     const rows = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]")) : [];
     const baseCount = rows.length;
     const index = computeDockInsertIndex(clientY);
     const baseText = index <= 0 ? "插入到顶部" : index >= baseCount ? "插入到底部" : "插入到这里";
-    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）` } }));
-  }, [computeDockInsertIndex]);
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", {
+      detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）`, ...(dockContextId ? { contextId: dockContextId } : {}) },
+    }));
+  }, [computeDockInsertIndex, dockContextId, queryWithinDockContext]);
 
   const clearDockHintByIndex = useCallback(() => {
-    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
-  }, []);
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", {
+      detail: { visible: false, ...(dockContextId ? { contextId: dockContextId } : {}) },
+    }));
+  }, [dockContextId]);
 
   const dispatchMainDropPreview = useCallback((visible: boolean) => {
     window.dispatchEvent(new CustomEvent("tc:material-package:main-drop-preview", { detail: { visible } }));
   }, []);
 
-  const dockPointerDragRef = useRef<{ active: boolean; pointerId: number | null }>({ active: false, pointerId: null });
+  const dockPointerDragRef = useRef<{ active: boolean; pointerId: number | null; startX: number; startY: number; moved: boolean }>({
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    moved: false,
+  });
   const onDockedHandlePointerDown = useCallback((event: React.PointerEvent) => {
     if (!isDockedEmbedded) {
       return;
     }
     dockPointerDragRef.current.active = true;
     dockPointerDragRef.current.pointerId = event.pointerId;
+    dockPointerDragRef.current.startX = event.clientX;
+    dockPointerDragRef.current.startY = event.clientY;
+    dockPointerDragRef.current.moved = false;
     dispatchMainDropPreview(false);
     event.preventDefault();
     try {
@@ -397,8 +546,13 @@ export default function MaterialPreviewFloat({
     if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
       return;
     }
+    const dx = event.clientX - dockPointerDragRef.current.startX;
+    const dy = event.clientY - dockPointerDragRef.current.startY;
+    if (!dockPointerDragRef.current.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+      dockPointerDragRef.current.moved = true;
+    }
 
-    const dockZone = document.querySelector("[data-role='material-package-dock-zone']") as HTMLElement | null;
+    const dockZone = queryWithinDockContext("[data-role='material-package-dock-zone']", { includeSelf: true }) as HTMLElement | null;
     const mainZone = document.querySelector("[data-role='material-package-main-zone']") as HTMLElement | null;
     const inRect = (zone: HTMLElement | null) => {
       if (!zone) {
@@ -416,12 +570,13 @@ export default function MaterialPreviewFloat({
 
     clearDockHintByIndex();
     dispatchMainDropPreview(inRect(mainZone));
-  }, [clearDockHintByIndex, dispatchDockHintByIndex, dispatchMainDropPreview]);
+  }, [clearDockHintByIndex, dispatchDockHintByIndex, dispatchMainDropPreview, queryWithinDockContext]);
 
   const onDockedHandlePointerUp = useCallback((event: React.PointerEvent) => {
     if (!dockPointerDragRef.current.active || dockPointerDragRef.current.pointerId !== event.pointerId) {
       return;
     }
+    const didMove = dockPointerDragRef.current.moved;
     dockPointerDragRef.current.active = false;
     dockPointerDragRef.current.pointerId = null;
     try {
@@ -431,7 +586,7 @@ export default function MaterialPreviewFloat({
       // ignore
     }
 
-    const dockZone = document.querySelector("[data-role='material-package-dock-zone']") as HTMLElement | null;
+    const dockZone = queryWithinDockContext("[data-role='material-package-dock-zone']", { includeSelf: true }) as HTMLElement | null;
     const mainZone = document.querySelector("[data-role='material-package-main-zone']") as HTMLElement | null;
     const inRect = (zone: HTMLElement | null) => {
       if (!zone) {
@@ -441,9 +596,11 @@ export default function MaterialPreviewFloat({
       return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
     };
 
-    if (inRect(dockZone)) {
+    if (didMove && inRect(dockZone)) {
       const index = computeDockInsertIndex(event.clientY);
-      window.dispatchEvent(new CustomEvent("tc:material-package:dock-move", { detail: { index } }));
+      window.dispatchEvent(new CustomEvent("tc:material-package:dock-move", {
+        detail: { index, ...(dockContextId ? { contextId: dockContextId } : {}) },
+      }));
       clearDockHintByIndex();
       dispatchMainDropPreview(false);
       return;
@@ -451,10 +608,14 @@ export default function MaterialPreviewFloat({
 
     clearDockHintByIndex();
     dispatchMainDropPreview(false);
-    if (inRect(mainZone)) {
-      onPopout?.(payload);
+    if (didMove && onPopout) {
+      const rect = containerRef.current?.getBoundingClientRect?.() ?? null;
+      const initialSize = rect ? { w: Math.round(rect.width), h: Math.round(rect.height) } : undefined;
+      const initialPosition = { x: Math.max(8, event.clientX - 80), y: Math.max(8, event.clientY - 16) };
+      // 拖出目录：不要求一定命中 main zone；交由调用方决定如何展示自由弹窗
+      onPopout(payload, { initialPosition, initialSize });
     }
-  }, [clearDockHintByIndex, computeDockInsertIndex, dispatchMainDropPreview, onPopout, payload]);
+  }, [clearDockHintByIndex, computeDockInsertIndex, dispatchMainDropPreview, dockContextId, onPopout, payload, queryWithinDockContext]);
 
   const initialState = useMemo(() => resolveInitialPreviewState(payload), [payload]);
   const [folderPath, setFolderPath] = useState<string[]>(() => initialState.folderPath);
@@ -477,38 +638,54 @@ export default function MaterialPreviewFloat({
   }, [thumbSize]);
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
+  const scope = payload.scope === "space" ? "space" : "global";
+  const activeSpaceId = scope === "space" && isValidId(payload.spaceId) ? payload.spaceId : null;
   const [selectedPackageId, setSelectedPackageId] = useState<number>(() => payload.packageId);
   const lastClickRef = useRef<{ key: string; timeMs: number } | null>(null);
   const inlineClickRef = useRef<{ key: string; timeMs: number } | null>(null);
 
   const dockZoneSelector = "[data-role='material-package-dock-zone']";
   const buildDockPayload = useCallback((): MaterialPreviewPayload => {
+    const scopePayload = scope === "space" && isValidId(activeSpaceId) ? { scope: "space" as const, spaceId: activeSpaceId } : {};
     const pathTokens = folderPath.map(p => `folder:${p}`);
     if (selectedItem?.type === "material")
-      return { kind: "material", packageId: selectedPackageId, label: selectedItem.name, path: [...pathTokens, `material:${selectedItem.name}`] };
+      return { ...scopePayload, kind: "material", packageId: selectedPackageId, label: selectedItem.name, path: [...pathTokens, `material:${selectedItem.name}`] };
     if (folderPath.length)
-      return { kind: "folder", packageId: selectedPackageId, label: folderPath[folderPath.length - 1]!, path: pathTokens };
-    return { kind: "package", packageId: selectedPackageId, label: title, path: [] };
-  }, [folderPath, selectedItem?.name, selectedItem?.type, selectedPackageId, title]);
+      return { ...scopePayload, kind: "folder", packageId: selectedPackageId, label: folderPath[folderPath.length - 1]!, path: pathTokens };
+    return { ...scopePayload, kind: "package", packageId: selectedPackageId, label: title, path: [] };
+  }, [activeSpaceId, folderPath, scope, selectedItem?.name, selectedItem?.type, selectedPackageId, title]);
 
   const dispatchDockHint = useCallback((args: { clientX: number; clientY: number }) => {
-    const zone = document.querySelector(dockZoneSelector) as HTMLElement | null;
+    const detectedContextId = detectDockContextIdAtPoint(args.clientX, args.clientY);
+    const prev = hoverDockContextIdRef.current;
+    hoverDockContextIdRef.current = detectedContextId;
+    if (!detectedContextId) {
+      if (prev) {
+        window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false, contextId: prev } }));
+      }
+      return;
+    }
+
+    const root = getDockContextRootById(detectedContextId);
+    const zone = (root as any).matches?.(dockZoneSelector) ? (root as HTMLElement) : (root as any).querySelector?.(dockZoneSelector) as HTMLElement | null;
     if (!zone)
       return;
     const rect = zone.getBoundingClientRect();
     const isInside = args.clientX >= rect.left && args.clientX <= rect.right && args.clientY >= rect.top && args.clientY <= rect.bottom;
     if (!isInside) {
-      window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
+      window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false, contextId: detectedContextId } }));
       return;
     }
 
-    const itemsRoot = document.querySelector("[data-role='material-package-tree-items']") as HTMLElement | null;
+    const itemsRoot = (root as any).querySelector?.("[data-role='material-package-tree-items']") as HTMLElement | null;
     const rows = itemsRoot ? Array.from(itemsRoot.querySelectorAll<HTMLElement>("[data-role='material-package-visible-row'][data-base-index]")) : [];
     const baseCount = rows.length;
-    const index = computeDockInsertIndex(args.clientY);
+    const index = computeDockInsertIndexInContext(detectedContextId, args.clientY);
     const baseText = index <= 0 ? "插入到顶部" : index >= baseCount ? "插入到底部" : "插入到这里";
-    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）` } }));
-  }, [computeDockInsertIndex]);
+    window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", {
+      detail: { visible: true, index, text: `${baseText}（${index}/${baseCount}）`, contextId: detectedContextId },
+    }));
+  }, [computeDockInsertIndexInContext, detectDockContextIdAtPoint, getDockContextRootById]);
 
   useEffect(() => {
     setSelectedPackageId(payload.packageId);
@@ -517,9 +694,30 @@ export default function MaterialPreviewFloat({
     setKeyword("");
   }, [initialState.folderPath, initialState.selectedMaterialName, payload.packageId]);
 
-  const packagesQuery = useQuery({
-    queryKey: buildMaterialPackageMyQueryKey(useBackend),
-    queryFn: () => useBackend ? getMyMaterialPackages() : Promise.resolve(readMockPackages()),
+  const listQueryKey = useMemo(() => {
+    if (scope === "space" && isValidId(activeSpaceId))
+      return buildSpacePreviewListQueryKey(activeSpaceId, useBackend);
+    return buildMaterialPackageMyQueryKey(useBackend);
+  }, [activeSpaceId, scope, useBackend]);
+
+  const detailQueryKey = useMemo(() => {
+    if (scope === "space")
+      return buildSpacePreviewDetailQueryKey(selectedPackageId, useBackend);
+    return buildMaterialPackageDetailQueryKey(selectedPackageId, useBackend);
+  }, [scope, selectedPackageId, useBackend]);
+
+  const packagesQuery = useQuery<unknown, Error, unknown>({
+    queryKey: listQueryKey,
+    queryFn: async () => {
+      if (scope === "space") {
+        if (!isValidId(activeSpaceId))
+          return [] as SpaceMaterialPackageRecord[];
+        return useBackend
+          ? await listSpaceMaterialPackages(activeSpaceId)
+          : readSpaceMockPackages(activeSpaceId);
+      }
+      return useBackend ? await getMyMaterialPackages() : readMockPackages();
+    },
     staleTime: 30 * 1000,
     retry: false,
     refetchOnWindowFocus: false,
@@ -529,8 +727,11 @@ export default function MaterialPreviewFloat({
     const data = packagesQuery.data;
     if (!Array.isArray(data))
       return [] as MaterialPackageRecord[];
+    if (scope === "space") {
+      return (data as SpaceMaterialPackageRecord[]).filter(Boolean).map(adaptSpaceRecord);
+    }
     return data.filter(Boolean) as MaterialPackageRecord[];
-  }, [packagesQuery.data]);
+  }, [packagesQuery.data, scope]);
 
   useEffect(() => {
     if (!packages.length)
@@ -546,10 +747,10 @@ export default function MaterialPreviewFloat({
     setSelectedItem(null);
   }, [packages, selectedPackageId]);
 
-  const backendPackageQuery = useQuery({
-    enabled: useBackend && Number.isFinite(selectedPackageId) && selectedPackageId > 0,
-    queryKey: buildMaterialPackageDetailQueryKey(selectedPackageId, useBackend),
-    queryFn: () => getMaterialPackage(selectedPackageId),
+  const backendPackageQuery = useQuery<unknown, Error, unknown>({
+    enabled: useBackend && Number.isFinite(selectedPackageId) && selectedPackageId > 0 && (scope !== "space" || isValidId(activeSpaceId)),
+    queryKey: detailQueryKey,
+    queryFn: async () => scope === "space" ? await getSpaceMaterialPackage(selectedPackageId) : await getMaterialPackage(selectedPackageId),
     staleTime: 60 * 1000,
     retry: false,
     refetchOnWindowFocus: false,
@@ -563,10 +764,15 @@ export default function MaterialPreviewFloat({
   }, [packages, selectedPackageId, useBackend]);
 
   const materialPackage = useMemo(() => {
-    if (useBackend)
-      return backendPackageQuery.data ?? null;
+    if (useBackend) {
+      if (scope === "space") {
+        const raw = backendPackageQuery.data as SpaceMaterialPackageRecord | null | undefined;
+        return raw ? adaptSpaceRecord(raw) : null;
+      }
+      return (backendPackageQuery.data as MaterialPackageRecord | null | undefined) ?? null;
+    }
     return activeMockPackage;
-  }, [activeMockPackage, backendPackageQuery.data, useBackend]);
+  }, [activeMockPackage, backendPackageQuery.data, scope, useBackend]);
 
   const rootPackageName = useMemo(() => {
     const id = Number(selectedPackageId);
@@ -619,12 +825,6 @@ export default function MaterialPreviewFloat({
 
   const totalCount = useMemo(() => sortedNodes.length, [sortedNodes.length]);
   const selectedCount = useMemo(() => (selectedItem ? 1 : 0), [selectedItem]);
-
-  const listQueryKey = useMemo(() => buildMaterialPackageMyQueryKey(useBackend), [useBackend]);
-  const detailQueryKey = useMemo(
-    () => buildMaterialPackageDetailQueryKey(selectedPackageId, useBackend),
-    [selectedPackageId, useBackend],
-  );
 
   const compactList = useMemo(() => viewMode === "list" && shellSize.w <= 360, [shellSize.w, viewMode]);
 
@@ -741,7 +941,38 @@ export default function MaterialPreviewFloat({
   const iconDangerControlClass = "h-6 w-[26px] inline-flex items-center justify-center rounded-none text-[color:var(--tc-mpf-danger)] hover:text-[color:var(--tc-mpf-danger-hover)] active:opacity-90 transition focus:outline-none focus-visible:ring-1 focus-visible:ring-[color:var(--tc-mpf-danger-ring)]";
 
   const saveMockRecord = useCallback((nextRecord: MaterialPackageRecord) => {
-    const now = new Date().toISOString();
+    const now = nowIso();
+
+    if (scope === "space") {
+      if (!isValidId(activeSpaceId))
+        return;
+      const base = Array.isArray(queryClient.getQueryData(listQueryKey))
+        ? (queryClient.getQueryData(listQueryKey) as SpaceMaterialPackageRecord[])
+        : readSpaceMockPackages(activeSpaceId);
+      const nextList = (base ?? []).map((p) => {
+        if (Number(p.spacePackageId) !== Number(nextRecord.packageId))
+          return p;
+        return {
+          ...p,
+          name: nextRecord.name,
+          description: nextRecord.description ?? "",
+          coverUrl: nextRecord.coverUrl ?? null,
+          status: nextRecord.status,
+          content: nextRecord.content,
+          updateTime: now,
+        };
+      });
+      writeSpaceMockPackages(activeSpaceId, nextList);
+      queryClient.setQueryData(listQueryKey, nextList);
+      const detail = nextList.find(p => Number(p.spacePackageId) === Number(nextRecord.packageId)) ?? null;
+      if (detail) {
+        queryClient.setQueryData(detailQueryKey, detail);
+      }
+      queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, false) });
+      queryClient.invalidateQueries({ queryKey: buildSpaceLibraryDetailQueryKey(Number(nextRecord.packageId), false) });
+      return;
+    }
+
     const base = Array.isArray(queryClient.getQueryData(listQueryKey))
       ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
       : readMockPackages();
@@ -749,12 +980,28 @@ export default function MaterialPreviewFloat({
     writeMockPackages(nextList);
     queryClient.setQueryData(listQueryKey, nextList);
     queryClient.setQueryData(detailQueryKey, { ...nextRecord, updateTime: now });
-  }, [detailQueryKey, listQueryKey, queryClient]);
+  }, [activeSpaceId, detailQueryKey, listQueryKey, queryClient, scope]);
 
   const saveContent = useCallback(async (nextContent: MaterialPackageContent) => {
     if (!materialPackage)
       return;
     if (useBackend) {
+      if (scope === "space") {
+        const updated = await updateSpaceMaterialPackage({ spacePackageId: selectedPackageId, content: nextContent });
+        queryClient.setQueryData(detailQueryKey, updated);
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev))
+            return prev;
+          const list = prev as SpaceMaterialPackageRecord[];
+          return list.map(p => Number(p.spacePackageId) === Number(updated.spacePackageId) ? updated : p);
+        });
+        if (isValidId(activeSpaceId)) {
+          queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, true) });
+          queryClient.invalidateQueries({ queryKey: buildSpaceLibraryDetailQueryKey(selectedPackageId, true) });
+        }
+        return;
+      }
+
       const updated = await updateMaterialPackage({ packageId: selectedPackageId, content: nextContent });
       queryClient.setQueryData(detailQueryKey, updated);
       queryClient.setQueryData(listQueryKey, (prev) => {
@@ -766,7 +1013,7 @@ export default function MaterialPreviewFloat({
       return;
     }
     saveMockRecord({ ...materialPackage, content: nextContent, updateTime: new Date().toISOString() });
-  }, [detailQueryKey, listQueryKey, materialPackage, queryClient, saveMockRecord, selectedPackageId, useBackend]);
+  }, [activeSpaceId, detailQueryKey, listQueryKey, materialPackage, queryClient, saveMockRecord, scope, selectedPackageId, useBackend]);
 
   const ensureContent = useCallback(() => {
     if (!materialPackage || !content)
@@ -876,6 +1123,29 @@ export default function MaterialPreviewFloat({
       return;
 
     if (useBackend) {
+      if (scope === "space") {
+        if (!isValidId(activeSpaceId))
+          throw new Error("缺少 spaceId，无法创建局内素材箱");
+        const created = await createSpaceMaterialPackage({
+          spaceId: activeSpaceId,
+          name: trimmed,
+          description: "",
+          coverUrl: "",
+          content: buildEmptyMaterialPackageContent(),
+        });
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev))
+            return [created];
+          return [created, ...(prev as SpaceMaterialPackageRecord[])];
+        });
+        queryClient.setQueryData(buildSpacePreviewDetailQueryKey(Number(created.spacePackageId), useBackend), created);
+        queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, true) });
+        setSelectedPackageId(created.spacePackageId);
+        setFolderPath([]);
+        setSelectedItem(null);
+        return;
+      }
+
       const created = await createMaterialPackage({ name: trimmed, content: buildEmptyMaterialPackageContent() });
       queryClient.setQueryData(listQueryKey, (prev) => {
         if (!Array.isArray(prev))
@@ -889,7 +1159,39 @@ export default function MaterialPreviewFloat({
       return;
     }
 
-    const now = new Date().toISOString();
+    const now = nowIso();
+    if (scope === "space") {
+      if (!isValidId(activeSpaceId))
+        throw new Error("缺少 spaceId，无法创建局内素材箱");
+      const base = Array.isArray(queryClient.getQueryData(listQueryKey))
+        ? (queryClient.getQueryData(listQueryKey) as SpaceMaterialPackageRecord[])
+        : readSpaceMockPackages(activeSpaceId);
+      const nextId = Math.max(0, ...base.map(p => Number(p.spacePackageId) || 0)) + 1;
+      const nextRecord: SpaceMaterialPackageRecord = {
+        spacePackageId: nextId,
+        spaceId: activeSpaceId,
+        sourcePackageId: null,
+        sourceUserId: null,
+        importedBy: null,
+        name: trimmed,
+        description: "",
+        coverUrl: "",
+        status: 0,
+        content: buildEmptyMaterialPackageContent(),
+        createTime: now,
+        updateTime: now,
+      };
+      const nextList = [nextRecord, ...base];
+      writeSpaceMockPackages(activeSpaceId, nextList);
+      queryClient.setQueryData(listQueryKey, nextList);
+      queryClient.setQueryData(buildSpacePreviewDetailQueryKey(nextId, false), nextRecord);
+      queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, false) });
+      setSelectedPackageId(nextId);
+      setFolderPath([]);
+      setSelectedItem(null);
+      return;
+    }
+
     const base = Array.isArray(queryClient.getQueryData(listQueryKey))
       ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
       : readMockPackages();
@@ -915,7 +1217,7 @@ export default function MaterialPreviewFloat({
     setSelectedPackageId(nextId);
     setFolderPath([]);
     setSelectedItem(null);
-  }, [listQueryKey, packages.length, queryClient, useBackend]);
+  }, [activeSpaceId, listQueryKey, packages.length, queryClient, scope, useBackend]);
 
   const handleRenamePackage = useCallback(async () => {
     if (!materialPackage)
@@ -928,6 +1230,20 @@ export default function MaterialPreviewFloat({
       return;
 
     if (useBackend) {
+      if (scope === "space") {
+        const updated = await updateSpaceMaterialPackage({ spacePackageId: selectedPackageId, name: trimmed });
+        queryClient.setQueryData(detailQueryKey, updated);
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev))
+            return prev;
+          const list = prev as SpaceMaterialPackageRecord[];
+          return list.map(p => Number(p.spacePackageId) === Number(updated.spacePackageId) ? updated : p);
+        });
+        if (isValidId(activeSpaceId))
+          queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, true) });
+        return;
+      }
+
       const updated = await updateMaterialPackage({ packageId: selectedPackageId, name: trimmed });
       queryClient.setQueryData(detailQueryKey, updated);
       queryClient.setQueryData(listQueryKey, (prev) => {
@@ -939,7 +1255,7 @@ export default function MaterialPreviewFloat({
       return;
     }
     saveMockRecord({ ...materialPackage, name: trimmed });
-  }, [detailQueryKey, listQueryKey, materialPackage, queryClient, saveMockRecord, selectedPackageId, useBackend]);
+  }, [activeSpaceId, detailQueryKey, listQueryKey, materialPackage, queryClient, saveMockRecord, scope, selectedPackageId, useBackend]);
 
   const handleDeletePackage = useCallback(async () => {
     if (!materialPackage)
@@ -949,6 +1265,23 @@ export default function MaterialPreviewFloat({
       return;
 
     if (useBackend) {
+      if (scope === "space") {
+        await deleteSpaceMaterialPackage(selectedPackageId);
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev))
+            return prev;
+          const list = prev as SpaceMaterialPackageRecord[];
+          return list.filter(p => Number(p.spacePackageId) !== Number(selectedPackageId));
+        });
+        queryClient.removeQueries({ queryKey: detailQueryKey });
+        if (isValidId(activeSpaceId))
+          queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, true) });
+        setSelectedPackageId(0);
+        setFolderPath([]);
+        setSelectedItem(null);
+        return;
+      }
+
       await deleteMaterialPackage(selectedPackageId);
       queryClient.setQueryData(listQueryKey, (prev) => {
         if (!Array.isArray(prev))
@@ -958,6 +1291,23 @@ export default function MaterialPreviewFloat({
       });
       queryClient.removeQueries({ queryKey: detailQueryKey });
       setSelectedPackageId(0);
+      setFolderPath([]);
+      setSelectedItem(null);
+      return;
+    }
+
+    if (scope === "space") {
+      if (!isValidId(activeSpaceId))
+        return;
+      const base = Array.isArray(queryClient.getQueryData(listQueryKey))
+        ? (queryClient.getQueryData(listQueryKey) as SpaceMaterialPackageRecord[])
+        : readSpaceMockPackages(activeSpaceId);
+      const nextList = base.filter(p => Number(p.spacePackageId) !== Number(selectedPackageId));
+      writeSpaceMockPackages(activeSpaceId, nextList);
+      queryClient.setQueryData(listQueryKey, nextList);
+      queryClient.removeQueries({ queryKey: detailQueryKey });
+      queryClient.invalidateQueries({ queryKey: buildSpaceLibraryListQueryKey(activeSpaceId, false) });
+      setSelectedPackageId(Number(nextList[0]?.spacePackageId ?? 0));
       setFolderPath([]);
       setSelectedItem(null);
       return;
@@ -980,8 +1330,8 @@ export default function MaterialPreviewFloat({
             status: 0,
             content: buildEmptyMaterialPackageContent(),
             importCount: 0,
-            createTime: new Date().toISOString(),
-            updateTime: new Date().toISOString(),
+            createTime: nowIso(),
+            updateTime: nowIso(),
           } satisfies MaterialPackageRecord,
         ];
     writeMockPackages(normalized);
@@ -989,7 +1339,7 @@ export default function MaterialPreviewFloat({
     setSelectedPackageId(Number(normalized[0]!.packageId));
     setFolderPath([]);
     setSelectedItem(null);
-  }, [listQueryKey, materialPackage, queryClient, selectedPackageId, useBackend]);
+  }, [activeSpaceId, detailQueryKey, listQueryKey, materialPackage, queryClient, scope, selectedPackageId, useBackend]);
 
   const handleCreateFolder = useCallback(async () => {
     const nextName = window.prompt("输入文件夹名称", "新文件夹");
@@ -1284,16 +1634,29 @@ export default function MaterialPreviewFloat({
       return;
     const mode = pointerRef.current.mode;
     if (mode === "drag") {
-      const zone = document.querySelector(dockZoneSelector) as HTMLElement | null;
-      if (zone) {
-        const rect = zone.getBoundingClientRect();
-        const isInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
-        if (isInside) {
-          const index = computeDockInsertIndex(event.clientY);
-          onDock(buildDockPayload(), { index });
-        }
+      const detectedContextId = detectDockContextIdAtPoint(event.clientX, event.clientY);
+      const dockPayload = buildDockPayload();
+      if (detectedContextId) {
+        const index = computeDockInsertIndexInContext(detectedContextId, event.clientY);
+        dispatchDockRequest(detectedContextId, index, dockPayload);
+        window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false, contextId: detectedContextId } }));
+        onClose();
       }
-      window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", { detail: { visible: false } }));
+      else {
+        // fallback: same-context docking
+        const zone = queryWithinDockContext(dockZoneSelector, { includeSelf: true }) as HTMLElement | null;
+        if (zone) {
+          const rect = zone.getBoundingClientRect();
+          const isInside = event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+          if (isInside) {
+            const index = computeDockInsertIndex(event.clientY);
+            onDock(dockPayload, { index });
+          }
+        }
+        window.dispatchEvent(new CustomEvent("tc:material-package:dock-hint", {
+          detail: { visible: false, ...(dockContextId ? { contextId: dockContextId } : {}) },
+        }));
+      }
     }
     try {
       containerRef.current?.releasePointerCapture(event.pointerId);
@@ -1303,7 +1666,7 @@ export default function MaterialPreviewFloat({
     }
     pointerRef.current.pointerId = null;
     pointerRef.current.mode = "none";
-  }, [buildDockPayload, computeDockInsertIndex, onDock]);
+  }, [buildDockPayload, computeDockInsertIndex, computeDockInsertIndexInContext, detectDockContextIdAtPoint, dispatchDockRequest, dockContextId, onClose, onDock, queryWithinDockContext]);
 
   return (
       <div
