@@ -14,7 +14,8 @@ import { getMaterialPreviewDragData, getMaterialPreviewDragOrigin, isMaterialPre
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
-import { draftCreateFolder, draftCreateMaterial, draftRenameFolder, draftRenameMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
+import type { MaterialFolderNode, MaterialNode } from "@/components/materialPackage/materialPackageApi";
+import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
 import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
@@ -67,6 +68,95 @@ function makeFolderToken(name: string) {
 
 function makeMaterialToken(name: string) {
   return `material:${name}`;
+}
+
+const SPACE_MATERIAL_MOVE_TYPE = "application/x-tc-space-material-move";
+
+type SpaceMaterialMovePayload = {
+  spaceId: number;
+  packageId: number;
+  kind: "folder" | "material";
+  path: string[];
+};
+
+let activeSpaceMaterialMoveDrag: SpaceMaterialMovePayload | null = null;
+
+function setSpaceMaterialMoveDragData(dataTransfer: DataTransfer, payload: SpaceMaterialMovePayload) {
+  activeSpaceMaterialMoveDrag = payload;
+  try {
+    dataTransfer.setData(SPACE_MATERIAL_MOVE_TYPE, JSON.stringify(payload));
+  }
+  catch {
+    // ignore
+  }
+  try {
+    dataTransfer.setData("text/plain", `tc-space-material-move:${JSON.stringify(payload)}`);
+  }
+  catch {
+    // ignore
+  }
+}
+
+function getSpaceMaterialMoveDragData(dataTransfer: DataTransfer | null): SpaceMaterialMovePayload | null {
+  if (!dataTransfer)
+    return null;
+  const parse = (raw: string) => {
+    const parsed = JSON.parse(raw) as Partial<SpaceMaterialMovePayload> | null;
+    if (!parsed || typeof parsed !== "object")
+      return null;
+    if (typeof parsed.spaceId !== "number" || !Number.isFinite(parsed.spaceId) || parsed.spaceId <= 0)
+      return null;
+    if (typeof parsed.packageId !== "number" || !Number.isFinite(parsed.packageId) || parsed.packageId <= 0)
+      return null;
+    if (parsed.kind !== "folder" && parsed.kind !== "material")
+      return null;
+    const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
+    if (!path.length)
+      return null;
+    return { spaceId: parsed.spaceId, packageId: parsed.packageId, kind: parsed.kind, path };
+  };
+
+  try {
+    const raw = dataTransfer.getData(SPACE_MATERIAL_MOVE_TYPE);
+    if (raw)
+      return parse(raw);
+  }
+  catch {
+    // ignore
+  }
+  try {
+    const raw = dataTransfer.getData("text/plain") || "";
+    const prefix = "tc-space-material-move:";
+    if (raw.startsWith(prefix))
+      return parse(raw.slice(prefix.length));
+  }
+  catch {
+    // ignore
+  }
+  return activeSpaceMaterialMoveDrag;
+}
+
+function isSpaceMaterialMoveDrag(dataTransfer: DataTransfer | null) {
+  if (!dataTransfer)
+    return false;
+  try {
+    return dataTransfer.types.includes(SPACE_MATERIAL_MOVE_TYPE);
+  }
+  catch {
+    // ignore
+  }
+  return Boolean(getSpaceMaterialMoveDragData(dataTransfer));
+}
+
+function tokenToName(token: string, prefix: "folder:" | "material:") {
+  return token.startsWith(prefix) ? token.slice(prefix.length) : token;
+}
+
+function payloadPathToFolderNames(path: string[]) {
+  return (Array.isArray(path) ? path : [])
+    .filter(p => typeof p === "string" && p.startsWith("folder:"))
+    .map(p => tokenToName(p, "folder:"))
+    .filter(Boolean);
 }
 
 function normalizeNodes(nodes: any[]): any[] {
@@ -519,6 +609,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const [dockTipTop, setDockTipTop] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const treeItemsRef = useRef<HTMLDivElement | null>(null);
+  const [moveDropTargetKey, setMoveDropTargetKey] = useState<string | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
@@ -968,6 +1059,155 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(spacePackageId, useBackend) });
   }, [queryClient, spaceId, useBackend]);
 
+  const moveNode = useCallback(async (args: {
+    source: SpaceMaterialMovePayload;
+    dest: { packageId: number; folderPath: string[] };
+  }) => {
+    if (!canEdit) {
+      toast.error("当前无权限修改局内素材库。");
+      return;
+    }
+    const { source, dest } = args;
+    if (!isValidId(source.packageId) || !isValidId(dest.packageId))
+      return;
+    if (Number(source.spaceId) !== Number(spaceId))
+      return;
+
+    const sourceFolderNames = payloadPathToFolderNames(source.path);
+    const sourceMaterialToken = source.path[source.path.length - 1] ?? "";
+    const sourceName = source.kind === "material"
+      ? tokenToName(String(sourceMaterialToken), "material:")
+      : sourceFolderNames[sourceFolderNames.length - 1] ?? "";
+    if (!sourceName)
+      return;
+
+    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+
+    // 防止把文件夹拖进自己的子孙目录
+    if (source.kind === "folder" && Number(source.packageId) === Number(dest.packageId)) {
+      const destPath = dest.folderPath;
+      const fromPath = sourceFolderNames;
+      const isDescendant = destPath.length >= fromPath.length
+        && fromPath.every((name, idx) => destPath[idx] === name);
+      if (isDescendant) {
+        toast.error("不能将文件夹移动到自身或其子目录中。");
+        return;
+      }
+    }
+
+    const toastId = `space-material-move:${source.packageId}:${source.kind}:${sourceName}`;
+    toast.loading("正在移动…", { id: toastId });
+
+    try {
+      // 读 source 内容并取出节点
+      const sourceContent = await loadPackageContent(source.packageId);
+      let removedNode: MaterialNode | null = null;
+      const contentAfterRemove = (() => {
+        if (source.kind === "folder") {
+          const siblings = getFolderNodesAtPath(sourceContent, sourceParentPath);
+          removedNode = (siblings.find(n => n.type === "folder" && n.name === sourceName) as MaterialFolderNode | undefined) ?? null;
+          return draftDeleteFolder(sourceContent, sourceParentPath, sourceName);
+        }
+        const siblings = getFolderNodesAtPath(sourceContent, sourceParentPath);
+        removedNode = (siblings.find(n => n.type === "material" && n.name === sourceName) as MaterialItemNode | undefined) ?? null;
+        return draftDeleteMaterial(sourceContent, sourceParentPath, sourceName);
+      })();
+
+      if (!removedNode) {
+        toast.error("要移动的节点不存在或已被刷新。", { id: toastId });
+        return;
+      }
+
+      // 读 dest 内容并插入（重名自动改名）
+      const destContent = Number(dest.packageId) === Number(source.packageId)
+        ? contentAfterRemove
+        : await loadPackageContent(dest.packageId);
+      const destSiblings = getFolderNodesAtPath(destContent, dest.folderPath);
+      const usedNames = destSiblings.map(n => n.name);
+      const finalName = autoRenameVsCodeLike(removedNode.name, usedNames);
+      const normalizedNode: MaterialNode = finalName === removedNode.name ? removedNode : ({ ...removedNode, name: finalName } as MaterialNode);
+
+      const contentAfterInsert = (() => {
+        // 直接追加到末尾
+        if (normalizedNode.type === "folder") {
+          return draftCreateFolder(
+            destContent,
+            dest.folderPath,
+            normalizedNode.name,
+          );
+        }
+        return draftCreateMaterial(destContent, dest.folderPath, normalizedNode as MaterialItemNode);
+      })();
+
+      // 如果是 folder，通过 draftCreateFolder 只会创建空 folder，需要保留 children：
+      // 这里改为：先 create，再把创建出的 folder 替换为完整 node
+      let finalContent = contentAfterInsert;
+      if (normalizedNode.type === "folder") {
+        const fullNode = normalizedNode as MaterialFolderNode;
+        finalContent = ((): MaterialPackageContent => {
+          const targetPath = [...dest.folderPath, fullNode.name];
+          const parentPath = dest.folderPath;
+          return (function replaceFolder(content: MaterialPackageContent) {
+            const root = Array.isArray(content.root) ? content.root : [];
+            const walk = (nodes: MaterialNode[], folderPath: string[]): MaterialNode[] => {
+              if (folderPath.length === 0) {
+                let changed = false;
+                const nextNodes = nodes.map((n) => {
+                  if (n.type !== "folder")
+                    return n;
+                  if (n.name !== fullNode.name)
+                    return n;
+                  changed = true;
+                  return { ...fullNode };
+                });
+                return changed ? nextNodes : nodes;
+              }
+              const [head, ...rest] = folderPath;
+              let changed = false;
+              const nextNodes = nodes.map((n) => {
+                if (n.type !== "folder" || n.name !== head)
+                  return n;
+                const nextChildren = walk(n.children, rest);
+                if (nextChildren === n.children)
+                  return n;
+                changed = true;
+                return { ...n, children: nextChildren } as MaterialNode;
+              });
+              return changed ? nextNodes : nodes;
+            };
+            const nextRoot = walk(root, parentPath);
+            return nextRoot === root ? content : { ...content, root: nextRoot };
+          })(contentAfterInsert);
+        })();
+      }
+
+      // 保存
+      if (Number(source.packageId) === Number(dest.packageId)) {
+        await savePackageContent(source.packageId, finalContent);
+      }
+      else {
+        await savePackageContent(source.packageId, contentAfterRemove);
+        await savePackageContent(dest.packageId, finalContent);
+      }
+
+      // UI：选中并滚动到目标
+      setExpandedId(dest.packageId);
+      const nextKey = normalizedNode.type === "folder"
+        ? `folder:${dest.packageId}:${[...dest.folderPath.map(makeFolderToken), makeFolderToken(normalizedNode.name)].join("/")}`
+        : `material:${dest.packageId}:${[...dest.folderPath.map(makeFolderToken), makeMaterialToken(normalizedNode.name)].join("/")}`;
+      setSelectedNode({ kind: normalizedNode.type === "folder" ? "folder" : "material", key: nextKey, packageId: dest.packageId });
+      setTimeout(() => {
+        document.querySelector(`[data-node-key="${nextKey}"]`)?.scrollIntoView({ block: "nearest" });
+      }, 0);
+
+      toast.success(finalName !== removedNode.name ? `已移动并重命名为「${finalName}」` : "已移动", { id: toastId });
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "移动失败";
+      toast.error(message, { id: toastId });
+    }
+  }, [canEdit, loadPackageContent, savePackageContent, spaceId]);
+
   const commitInlineRename = useCallback(async () => {
     const snapshot = inlineRename;
     if (!snapshot || snapshot.saving)
@@ -1307,6 +1547,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const isSelected = selectedNode?.key === item.key;
       const spacePackageId = Number(item.payload.packageId);
       const isEditingName = inlineRename?.key === item.key;
+      const isMoveDropTarget = moveDropTargetKey === item.key;
       return (
         <div
           key={item.key}
@@ -1316,13 +1557,42 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
           data-node-key={item.key}
         >
           <div
-            className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""}`}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.effectAllowed = "copy";
               setMaterialPreviewDragData(e.dataTransfer, item.payload);
               setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
             }}
+            onDragOver={(e) => {
+              if (!canEdit)
+                return;
+              const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+              if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = "move";
+              setMoveDropTargetKey(item.key);
+            }}
+            onDragLeave={(e) => {
+              const related = e.relatedTarget as HTMLElement | null;
+              if (related && (e.currentTarget as HTMLElement).contains(related))
+                return;
+              setMoveDropTargetKey(prev => (prev === item.key ? null : prev));
+            }}
+            onDrop={(e) => {
+              if (!canEdit)
+                return;
+              const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+              if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              setMoveDropTargetKey(null);
+              void moveNode({ source: movePayload, dest: { packageId: spacePackageId, folderPath: [] } });
+            }}
+            onDragEnd={() => setMoveDropTargetKey(null)}
             onClick={() => {
               setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
               setExpandedId(item.isExpanded ? null : spacePackageId);
@@ -1418,6 +1688,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const isSelected = selectedNode?.key === item.key;
       const spacePackageId = Number(item.payload.packageId);
       const isEditingName = inlineRename?.key === item.key;
+      const isMoveDropTarget = moveDropTargetKey === item.key;
       return (
         <div
           key={item.key}
@@ -1427,13 +1698,53 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
           data-node-key={item.key}
         >
           <div
-            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""}`}
             style={{ paddingLeft: 4 + item.depth }}
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = "copy";
+              e.dataTransfer.effectAllowed = canEdit ? "copyMove" : "copy";
               setMaterialPreviewDragData(e.dataTransfer, item.payload);
               setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+              if (canEdit) {
+                setSpaceMaterialMoveDragData(e.dataTransfer, {
+                  spaceId,
+                  packageId: spacePackageId,
+                  kind: "folder",
+                  path: item.payload.path,
+                });
+              }
+            }}
+            onDragOver={(e) => {
+              if (!canEdit)
+                return;
+              const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+              if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = "move";
+              setMoveDropTargetKey(item.key);
+            }}
+            onDragLeave={(e) => {
+              const related = e.relatedTarget as HTMLElement | null;
+              if (related && (e.currentTarget as HTMLElement).contains(related))
+                return;
+              setMoveDropTargetKey(prev => (prev === item.key ? null : prev));
+            }}
+            onDrop={(e) => {
+              if (!canEdit)
+                return;
+              const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+              if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              setMoveDropTargetKey(null);
+              void moveNode({ source: movePayload, dest: { packageId: spacePackageId, folderPath: item.folderPath } });
+            }}
+            onDragEnd={() => {
+              activeSpaceMaterialMoveDrag = null;
+              setMoveDropTargetKey(null);
             }}
             onClick={() => {
               setSelectedNode({ kind: "folder", key: item.key, packageId: spacePackageId });
@@ -1534,9 +1845,21 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
           style={{ paddingLeft: 22 + item.depth }}
           draggable
           onDragStart={(e) => {
-            e.dataTransfer.effectAllowed = "copy";
+            e.dataTransfer.effectAllowed = canEdit ? "copyMove" : "copy";
             setMaterialPreviewDragData(e.dataTransfer, item.payload);
             setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+            if (canEdit) {
+              setSpaceMaterialMoveDragData(e.dataTransfer, {
+                spaceId,
+                packageId: spacePackageId,
+                kind: "material",
+                path: item.payload.path,
+              });
+            }
+          }}
+          onDragEnd={() => {
+            activeSpaceMaterialMoveDrag = null;
+            setMoveDropTargetKey(null);
           }}
           onClick={() => {
             setSelectedNode({ kind: "material", key: item.key, packageId: spacePackageId });
@@ -1603,7 +1926,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         </div>
       </div>
     );
-  }, [closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, openPreview, selectedNode?.key, setCollapsedFolderByKey, startInlineRename, toggleFolderCollapsed, undockPreview]);
+  }, [canEdit, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, selectedNode?.key, setExpandedId, setMoveDropTargetKey, spaceId, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
 
   return (
     <div
@@ -1611,6 +1934,10 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       data-role="material-package-dock-zone"
       data-dock-context-id={dockContextId}
       onDragOverCapture={(e) => {
+        if (isSpaceMaterialMoveDrag(e.dataTransfer)) {
+          clearDockHint();
+          return;
+        }
         e.preventDefault();
         if (!isMaterialPreviewDrag(e.dataTransfer))
           return;
@@ -1624,6 +1951,8 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         clearDockHint();
       }}
       onDropCapture={(e) => {
+        if (isSpaceMaterialMoveDrag(e.dataTransfer))
+          return;
         e.preventDefault();
         e.stopPropagation();
         const payload = getMaterialPreviewDragData(e.dataTransfer);
