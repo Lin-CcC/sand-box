@@ -63,13 +63,31 @@ function parseRepositoryUpdateSummary(type?: number) {
     case 8:
       return "收藏了仓库";
     default:
-      return "更新了仓库";
+      return "仓库动态";
   }
 }
 
-const REPOSITORY_FEED_TYPES = new Set([5, 6, 7, 8]);
 const REPOSITORY_UPDATES_PAGE_SIZE = 20;
 const MAX_UPDATES_TO_RENDER = 5;
+
+function extractRepositoryId(response: any): number | null {
+  const direct = Number(response?.repositoryId ?? response?.repoId);
+  if (isValidId(direct))
+    return direct;
+
+  const nestedRepo = response?.repository;
+  const nested = Number(nestedRepo?.repositoryId ?? nestedRepo?.id);
+  if (isValidId(nested))
+    return nested;
+
+  const fallback = Number(response?.targetRepositoryId ?? response?.targetId);
+  return isValidId(fallback) ? fallback : null;
+}
+
+function extractActorUserId(response: any): number | null {
+  const direct = Number(response?.userId ?? response?.actorUserId);
+  return isValidId(direct) ? direct : null;
+}
 
 export default function ChatDiscoverNavPanel({ onCloseLeftDrawer, onToggleLeftDrawer, isLeftDrawerOpen, activeMode }: ChatDiscoverNavPanelProps) {
   const leftDrawerLabel = isLeftDrawerOpen ? "收起侧边栏" : "展开侧边栏";
@@ -141,20 +159,17 @@ export default function ChatDiscoverNavPanel({ onCloseLeftDrawer, onToggleLeftDr
     const result: FollowingUpdateItem[] = [];
     for (const item of list as FeedWithStatsResponse[]) {
       const type = item?.type;
-      if (!REPOSITORY_FEED_TYPES.has(type ?? -1))
-        continue;
-
       const response = item?.response as any;
-      const repositoryId = Number(response?.repositoryId);
-      if (!isValidId(repositoryId))
-        continue;
+      const repositoryId = extractRepositoryId(response);
+      if (!repositoryId)
+        continue; // 只显示能识别出仓库 ID 的动态
 
-      const actorUserId = Number(response?.userId);
+      const actorUserId = extractActorUserId(response);
       const timestamp = String(response?.createTime ?? response?.updateTime ?? "").trim() || undefined;
 
       result.push({
         kind: "repository",
-        actorUserId: isValidId(actorUserId) ? actorUserId : undefined,
+        actorUserId: actorUserId ?? undefined,
         targetId: repositoryId,
         title: parseRepositoryUpdateTitle(response, repositoryId),
         summary: parseRepositoryUpdateSummary(type),
