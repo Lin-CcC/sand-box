@@ -511,18 +511,11 @@ export default function MaterialPreviewFloat({
   }, [computeDockInsertIndex]);
 
   useEffect(() => {
-    setFolderPath(initialState.folderPath);
-    setSelectedItem(initialState.selectedMaterialName ? { type: "material", name: initialState.selectedMaterialName } : null);
-    setKeyword("");
-  }, [initialState.folderPath, initialState.selectedMaterialName]);
-
-  useEffect(() => {
-    if (payload.packageId === selectedPackageId)
-      return;
     setSelectedPackageId(payload.packageId);
     setFolderPath(initialState.folderPath);
     setSelectedItem(initialState.selectedMaterialName ? { type: "material", name: initialState.selectedMaterialName } : null);
-  }, [initialState.folderPath, initialState.selectedMaterialName, payload.packageId, selectedPackageId]);
+    setKeyword("");
+  }, [initialState.folderPath, initialState.selectedMaterialName, payload.packageId]);
 
   const packagesQuery = useQuery({
     queryKey: buildMaterialPackageMyQueryKey(useBackend),
@@ -764,7 +757,12 @@ export default function MaterialPreviewFloat({
     if (useBackend) {
       const updated = await updateMaterialPackage({ packageId: selectedPackageId, content: nextContent });
       queryClient.setQueryData(detailQueryKey, updated);
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return prev;
+        const list = prev as MaterialPackageRecord[];
+        return list.map(p => Number(p.packageId) === Number(updated.packageId) ? updated : p);
+      });
       return;
     }
     saveMockRecord({ ...materialPackage, content: nextContent, updateTime: new Date().toISOString() });
@@ -879,7 +877,12 @@ export default function MaterialPreviewFloat({
 
     if (useBackend) {
       const created = await createMaterialPackage({ name: trimmed, content: buildEmptyMaterialPackageContent() });
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return [created];
+        return [created, ...(prev as MaterialPackageRecord[])];
+      });
+      queryClient.setQueryData(buildMaterialPackageDetailQueryKey(Number(created.packageId), useBackend), created);
       setSelectedPackageId(created.packageId);
       setFolderPath([]);
       setSelectedItem(null);
@@ -927,7 +930,12 @@ export default function MaterialPreviewFloat({
     if (useBackend) {
       const updated = await updateMaterialPackage({ packageId: selectedPackageId, name: trimmed });
       queryClient.setQueryData(detailQueryKey, updated);
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return prev;
+        const list = prev as MaterialPackageRecord[];
+        return list.map(p => Number(p.packageId) === Number(updated.packageId) ? updated : p);
+      });
       return;
     }
     saveMockRecord({ ...materialPackage, name: trimmed });
@@ -942,7 +950,12 @@ export default function MaterialPreviewFloat({
 
     if (useBackend) {
       await deleteMaterialPackage(selectedPackageId);
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return prev;
+        const list = prev as MaterialPackageRecord[];
+        return list.filter(p => Number(p.packageId) !== Number(selectedPackageId));
+      });
       queryClient.removeQueries({ queryKey: detailQueryKey });
       setSelectedPackageId(0);
       setFolderPath([]);
@@ -1527,6 +1540,7 @@ export default function MaterialPreviewFloat({
             setSelectedPackageId(id);
             setFolderPath([]);
             setSelectedItem(null);
+            setKeyword("");
           }}
           className="h-6 w-[140px] max-w-[40%] rounded-none border border-[color:var(--tc-mpf-border-strong)] bg-[color:var(--tc-mpf-input-bg)] px-2 text-[12px] text-[color:var(--tc-mpf-text)] focus:outline-none focus:border-[color:var(--tc-mpf-accent)]"
           aria-label="选择素材包"

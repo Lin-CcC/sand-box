@@ -6,11 +6,12 @@ import type {
 } from "@/components/materialPackage/materialPackageApi";
 import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
 
-import { ArrowClockwise, CrosshairSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, CrosshairSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-import { createMaterialPackage, getMyMaterialPackages, updateMaterialPackage } from "@/components/materialPackage/materialPackageApi";
+import { createMaterialPackage, deleteMaterialPackage, getMyMaterialPackages, updateMaterialPackage } from "@/components/materialPackage/materialPackageApi";
 import { readMockPackages, writeMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import PortalTooltip from "@/components/common/portalTooltip";
@@ -18,9 +19,10 @@ import { ChevronDown, FolderIcon, SidebarSimpleIcon } from "@/icons";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
 import type { SelectedExplorerNode } from "@/components/chat/materialPackage/materialPackageExplorerOps";
-import { autoRenameVsCodeLike, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { autoRenameVsCodeLike, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
-import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
+import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
+import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
 import {
   isMaterialPreviewDrag,
   getMaterialPreviewDragData,
@@ -112,6 +114,48 @@ function clampInt(value: number, min: number, max: number) {
 
 type ToolbarAction = "new-file" | "new-folder" | "new-package" | "import";
 
+type PendingDeleteDialog =
+  | {
+    kind: "package";
+    packageId: number;
+    label: string;
+    saving: boolean;
+  }
+  | {
+    kind: "folder";
+    packageId: number;
+    folderPath: string[];
+    label: string;
+    saving: boolean;
+  }
+  | {
+    kind: "material";
+    packageId: number;
+    folderPath: string[];
+    materialName: string;
+    label: string;
+    saving: boolean;
+  };
+
+function extractPathName(token: string, prefix: "folder:" | "material:") {
+  if (!token.startsWith(prefix))
+    return null;
+  const name = token.slice(prefix.length).trim();
+  return name || null;
+}
+
+function payloadPathToMaterialName(path: string[] | undefined | null) {
+  const parts = Array.isArray(path) ? path : [];
+  for (const part of parts) {
+    if (typeof part !== "string")
+      continue;
+    const name = extractPathName(part, "material:");
+    if (name)
+      return name;
+  }
+  return null;
+}
+
 export default function MaterialPackageNavPanel({
   onCloseLeftDrawer,
   onToggleLeftDrawer,
@@ -126,6 +170,7 @@ export default function MaterialPackageNavPanel({
   const leftDrawerLabel = isLeftDrawerOpen ? "收起侧边栏" : "展开侧边栏";
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend, setUseBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
+  const [toolbarPinned, setToolbarPinned] = useLocalStorage<boolean>("tc:material-package:toolbar-pinned", false);
   const queryClient = useQueryClient();
   const listQueryKey = buildMaterialPackageMyQueryKey(useBackend);
 
@@ -216,6 +261,17 @@ export default function MaterialPackageNavPanel({
     target: { packageId: number; folderPath: string[] };
     files: File[];
   } | null>(null);
+  const [pendingDeleteDialog, setPendingDeleteDialog] = useState<PendingDeleteDialog | null>(null);
+
+  const [visibilityEditor, setVisibilityEditor] = useState<{
+    packageId: number;
+    draft: 0 | 1;
+    saving: boolean;
+    anchor: HTMLButtonElement | null;
+  } | null>(null);
+  const visibilityPopoverRef = useRef<HTMLDivElement | null>(null);
+  const visibilityFirstInputRef = useRef<HTMLInputElement | null>(null);
+  const [visibilityPos, setVisibilityPos] = useState<{ left: number; top: number } | null>(null);
   const [dockHint, setDockHint] = useState<{ index: number; text: string } | null>(null);
   const [dockLineTop, setDockLineTop] = useState<number | null>(null);
   const [dockTipTop, setDockTipTop] = useState<number | null>(null);
@@ -297,7 +353,6 @@ export default function MaterialPackageNavPanel({
         const list = prev as MaterialPackageRecord[];
         return list.map(p => Number(p.packageId) === packageId ? updated : p);
       });
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
       return updated;
     }
 
@@ -306,6 +361,133 @@ export default function MaterialPackageNavPanel({
       return null;
     const nextRecord: MaterialPackageRecord = { ...base, content: args.nextContent, updateTime: new Date().toISOString() };
     saveMockRecord(nextRecord);
+    return nextRecord;
+  }, [findPackageById, listQueryKey, queryClient, useBackend]);
+
+  const closeVisibilityEditor = useCallback(() => {
+    setVisibilityEditor((prev) => {
+      if (!prev)
+        return prev;
+      try {
+        prev.anchor?.focus?.();
+      }
+      catch {
+        // ignore focus errors
+      }
+      return null;
+    });
+    setVisibilityPos(null);
+  }, []);
+
+  const computeVisibilityPos = useCallback((anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    const width = 320;
+    const height = 188;
+    const padding = 8;
+
+    const preferBelowTop = rect.bottom + 6;
+    const preferAboveTop = rect.top - height - 6;
+    const top = preferBelowTop + height + padding <= window.innerHeight
+      ? preferBelowTop
+      : Math.max(padding, preferAboveTop);
+
+    const preferLeft = rect.right - width;
+    const left = Math.max(padding, Math.min(preferLeft, window.innerWidth - width - padding));
+
+    return { left, top: Math.max(padding, Math.min(top, window.innerHeight - height - padding)) };
+  }, []);
+
+  const openVisibilityEditor = useCallback((args: { packageId: number; anchor: HTMLButtonElement; current: 0 | 1 }) => {
+    setVisibilityEditor({
+      packageId: Number(args.packageId),
+      draft: normalizePackageVisibility(args.current),
+      saving: false,
+      anchor: args.anchor,
+    });
+    setVisibilityPos(computeVisibilityPos(args.anchor));
+  }, [computeVisibilityPos]);
+
+  useEffect(() => {
+    if (!visibilityEditor?.anchor)
+      return;
+    setVisibilityPos(computeVisibilityPos(visibilityEditor.anchor));
+  }, [computeVisibilityPos, visibilityEditor?.anchor]);
+
+  useEffect(() => {
+    if (!visibilityEditor)
+      return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeVisibilityEditor();
+      }
+    };
+
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target)
+        return;
+      const pop = visibilityPopoverRef.current;
+      if (pop && pop.contains(target))
+        return;
+      if (visibilityEditor.anchor && visibilityEditor.anchor.contains(target as Node))
+        return;
+      closeVisibilityEditor();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onPointerDown, true);
+    };
+  }, [closeVisibilityEditor, visibilityEditor]);
+
+  useEffect(() => {
+    if (!visibilityEditor)
+      return;
+    const t = window.setTimeout(() => {
+      try {
+        visibilityFirstInputRef.current?.focus?.();
+      }
+      catch {
+        // ignore focus errors
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [visibilityEditor]);
+
+  const savePackageVisibility = useCallback(async (args: { packageId: number; visibility: 0 | 1 }) => {
+    const packageId = Number(args.packageId);
+    const visibility = normalizePackageVisibility(args.visibility);
+    const detailKey = buildMaterialPackageDetailQueryKey(packageId, useBackend);
+
+    if (useBackend) {
+      const updated = await updateMaterialPackage({ packageId, visibility });
+      queryClient.setQueryData(detailKey, updated);
+      queryClient.setQueryData(listQueryKey, (prev) => {
+        if (!Array.isArray(prev))
+          return prev;
+        const list = prev as MaterialPackageRecord[];
+        return list.map(p => Number(p.packageId) === packageId ? updated : p);
+      });
+      return updated;
+    }
+
+    const baseList = Array.isArray(queryClient.getQueryData(listQueryKey))
+      ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
+      : readMockPackages();
+    const baseRecord = baseList.find(p => Number(p.packageId) === packageId) ?? findPackageById(packageId);
+    if (!baseRecord)
+      return null;
+
+    // For visibility toggles, keep list order stable and avoid bumping updateTime to prevent any sort-related surprises.
+    const nextRecord: MaterialPackageRecord = { ...baseRecord, visibility };
+    const nextList = baseList.map(p => Number(p.packageId) === packageId ? nextRecord : p);
+    writeMockPackages(nextList);
+    queryClient.setQueryData(listQueryKey, nextList);
+    queryClient.setQueryData(detailKey, nextRecord);
     return nextRecord;
   }, [findPackageById, listQueryKey, queryClient, saveMockRecord, useBackend]);
 
@@ -562,7 +744,6 @@ export default function MaterialPackageNavPanel({
           return [created];
         return [created, ...(prev as MaterialPackageRecord[])];
       });
-      queryClient.invalidateQueries({ queryKey: listQueryKey });
       const key = `root:${Number(created.packageId)}`;
       const payload = toPreviewPayload({ kind: "package", packageId: Number(created.packageId), label: created.name, path: [] });
       setSelectedNode({ kind: "package", key, payload });
@@ -664,6 +845,166 @@ export default function MaterialPackageNavPanel({
     setShouldResortPackages(true);
     packagesQuery.refetch();
   }, [packagesQuery]);
+
+  const handleToolbarDelete = useCallback(() => {
+    if (!selectedNode?.payload) {
+      window.alert("请先选择一个文件/文件夹/素材箱。");
+      return;
+    }
+
+    const packageId = Number(selectedNode.payload.packageId ?? 0);
+    const pkg = findPackageById(packageId);
+    if (!pkg) {
+      window.alert("目标素材箱不存在或已被刷新。");
+      return;
+    }
+
+    if (selectedNode.kind === "package") {
+      setPendingDeleteDialog({
+        kind: "package",
+        packageId,
+        label: pkg.name ?? `素材包#${packageId}`,
+        saving: false,
+      });
+      return;
+    }
+
+    const folderPath = payloadPathToFolderNames(selectedNode.payload.path);
+    if (selectedNode.kind === "folder") {
+      const label = folderPath[folderPath.length - 1] ?? selectedNode.payload.label ?? "文件夹";
+      setPendingDeleteDialog({
+        kind: "folder",
+        packageId,
+        folderPath,
+        label,
+        saving: false,
+      });
+      return;
+    }
+
+    const materialName = payloadPathToMaterialName(selectedNode.payload.path) ?? selectedNode.payload.label ?? "";
+    if (!materialName) {
+      window.alert("无法解析要删除的文件名称。");
+      return;
+    }
+    setPendingDeleteDialog({
+      kind: "material",
+      packageId,
+      folderPath,
+      materialName,
+      label: materialName,
+      saving: false,
+    });
+  }, [findPackageById, selectedNode?.kind, selectedNode?.payload]);
+
+  const runDeleteConfirmed = useCallback(async (dialog: PendingDeleteDialog) => {
+    if (dialog.kind === "package") {
+      setPendingDeleteDialog(prev => prev ? { ...prev, saving: true } as PendingDeleteDialog : prev);
+      try {
+        const packageId = Number(dialog.packageId);
+        const detailKey = buildMaterialPackageDetailQueryKey(packageId, useBackend);
+
+        if (useBackend) {
+          await deleteMaterialPackage(packageId);
+        }
+        else {
+          const base = Array.isArray(queryClient.getQueryData(listQueryKey))
+            ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
+            : readMockPackages();
+          const nextList = (base ?? []).filter(p => Number(p.packageId) !== packageId);
+          writeMockPackages(nextList);
+          queryClient.setQueryData(listQueryKey, nextList);
+        }
+
+        queryClient.removeQueries({ queryKey: detailKey });
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev))
+            return prev;
+          const list = prev as MaterialPackageRecord[];
+          return list.filter(p => Number(p.packageId) !== packageId);
+        });
+
+        setCollapsedByKey((prev) => {
+          const next: Record<string, boolean> = {};
+          const rootPrefix = `root:${packageId}`;
+          const folderPrefix = `pkg:${packageId}:`;
+          Object.entries(prev).forEach(([key, value]) => {
+            if (key === rootPrefix || key.startsWith(folderPrefix))
+              return;
+            next[key] = value;
+          });
+          return next;
+        });
+
+        setPendingDeleteDialog(null);
+        setVisibilityEditor((prev) => (prev?.packageId === packageId ? null : prev));
+
+        setSelectedNode((prev) => {
+          if (!prev)
+            return prev;
+          if (Number(prev.payload.packageId ?? 0) === packageId)
+            return null;
+          return prev;
+        });
+        setDefaultTargetPackageId((prev) => (Number(prev ?? 0) === packageId ? null : prev));
+      }
+      catch (error) {
+        setPendingDeleteDialog(prev => prev ? { ...prev, saving: false } as PendingDeleteDialog : prev);
+        const message = error instanceof Error ? error.message : "删除失败";
+        window.alert(message);
+      }
+
+      return;
+    }
+
+    if (dialog.kind === "folder") {
+      const folderName = dialog.folderPath[dialog.folderPath.length - 1] ?? dialog.label;
+      setPendingDeleteDialog(prev => prev ? { ...prev, saving: true } as PendingDeleteDialog : prev);
+      try {
+        const pkg = findPackageById(dialog.packageId);
+        if (!pkg)
+          throw new Error("目标素材箱不存在或已被刷新。");
+        const baseContent = pkg.content ?? buildEmptyMaterialPackageContent();
+        const parentPath = dialog.folderPath.slice(0, -1);
+        const nextContent = draftDeleteFolder(baseContent, parentPath, folderName);
+        await savePackageContent({ packageId: dialog.packageId, nextContent });
+
+        const packageLabel = pkg.name ?? `素材包#${dialog.packageId}`;
+        const payload = toPreviewPayload({ kind: "package", packageId: dialog.packageId, label: packageLabel, path: [] });
+        setSelectedNode({ kind: "package", key: `root:${dialog.packageId}`, payload });
+        ensureRevealNode(payload);
+        setPendingDeleteDialog(null);
+      }
+      catch (error) {
+        setPendingDeleteDialog(prev => prev ? { ...prev, saving: false } as PendingDeleteDialog : prev);
+        const message = error instanceof Error ? error.message : "删除失败";
+        window.alert(message);
+      }
+
+      return;
+    }
+
+    setPendingDeleteDialog(prev => prev ? { ...prev, saving: true } as PendingDeleteDialog : prev);
+    try {
+      const pkg = findPackageById(dialog.packageId);
+      if (!pkg)
+        throw new Error("目标素材箱不存在或已被刷新。");
+      const baseContent = pkg.content ?? buildEmptyMaterialPackageContent();
+      const nextContent = draftDeleteMaterial(baseContent, dialog.folderPath, dialog.materialName);
+      await savePackageContent({ packageId: dialog.packageId, nextContent });
+
+      const packageLabel = pkg.name ?? `素材包#${dialog.packageId}`;
+      const payload = toPreviewPayload({ kind: "package", packageId: dialog.packageId, label: packageLabel, path: [] });
+      setSelectedNode({ kind: "package", key: `root:${dialog.packageId}`, payload });
+      ensureRevealNode(payload);
+      setPendingDeleteDialog(null);
+    }
+    catch (error) {
+      setPendingDeleteDialog(prev => prev ? { ...prev, saving: false } as PendingDeleteDialog : prev);
+      const message = error instanceof Error ? error.message : "删除失败";
+      window.alert(message);
+    }
+  }, [ensureRevealNode, findPackageById, listQueryKey, queryClient, savePackageContent, setCollapsedByKey, useBackend]);
 
   const handleToolbarReveal = useCallback(() => {
     if (selectedNode?.payload) {
@@ -944,6 +1285,11 @@ export default function MaterialPackageNavPanel({
 
     if (item.kind === "package") {
       const isSelected = selectedNode?.key === item.key;
+      const packageId = Number(item.payload.packageId);
+      const pkg = findPackageById(packageId);
+      const visibility = normalizePackageVisibility(pkg?.visibility);
+      const visibilityCopy = getVisibilityCopy(visibility);
+      const isVisibilityOpen = visibilityEditor?.packageId === packageId;
       return (
         <div
           key={item.key}
@@ -985,6 +1331,19 @@ export default function MaterialPackageNavPanel({
                 {item.nodeCount ? `${item.nodeCount}项` : "空"}
               </span>
             </PortalTooltip>
+            <button
+              type="button"
+              className={`shrink-0 inline-flex items-center rounded-sm border px-2 py-[1px] text-[11px] ${visibility ? "border-info/40 text-info" : "border-base-300 opacity-80"} ${isVisibilityOpen ? "bg-base-300/60" : "hover:bg-base-300/40"}`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                openVisibilityEditor({ packageId, anchor: e.currentTarget, current: visibility });
+              }}
+              title={visibilityCopy.title}
+              aria-label={`可见性：${visibilityCopy.chip}，点击修改`}
+            >
+              {visibilityCopy.chip}
+            </button>
           </div>
         </div>
       );
@@ -1058,7 +1417,7 @@ export default function MaterialPackageNavPanel({
         <span className="flex-1 truncate">{item.name}</span>
       </div>
     );
-  }, [dockedPreview, maybeOpenPreviewByDoubleClick, onDockPreview, onOpenPreview, onUndockPreview, openPreview, resolvedDockIndex, selectedNode?.key, toggleCollapsed]);
+  }, [dockedPreview, findPackageById, maybeOpenPreviewByDoubleClick, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, resolvedDockIndex, selectedNode?.key, toggleCollapsed, visibilityEditor?.packageId]);
 
   return (
     <div
@@ -1117,9 +1476,12 @@ export default function MaterialPackageNavPanel({
         ref={scrollRef}
         className="relative flex-1 min-h-0 overflow-auto"
         onScroll={() => {
-          if (!dockHint)
-            return;
-          applyDockHint(dockHint);
+          if (dockHint) {
+            applyDockHint(dockHint);
+          }
+          if (visibilityEditor?.anchor) {
+            setVisibilityPos(computeVisibilityPos(visibilityEditor.anchor));
+          }
         }}
       >
         <div className="p-3 space-y-3">
@@ -1138,17 +1500,25 @@ export default function MaterialPackageNavPanel({
             </button>
           </div>
 
-          <div className="space-y-2">
-            <div className="px-1 flex items-center justify-between gap-2 group">
-                <div className="text-[11px] font-semibold tracking-wider text-base-content/50">
+            <div className="space-y-2">
+              <div className="px-1 flex items-center justify-between gap-2 group">
+                <button
+                  type="button"
+                  className="text-[11px] font-semibold tracking-wider text-base-content/50 hover:text-base-content/70 active:text-base-content/80 select-none"
+                  onClick={() => setToolbarPinned(!toolbarPinned)}
+                  aria-pressed={toolbarPinned}
+                  title={toolbarPinned ? "隐藏工具栏（仍可悬浮显示）" : "固定显示工具栏"}
+                >
                   TUAN-CHAT
-                </div>
-              <div className="flex items-center gap-1 opacity-70 hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                <PortalTooltip label="新建文件" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFile} aria-label="新建文件">
-                    <FilePlus className="size-4" />
-                  </button>
-                </PortalTooltip>
+                </button>
+                <div
+                  className={`flex items-center gap-1 transition-opacity ${toolbarPinned ? "opacity-90" : "opacity-0 pointer-events-none group-hover:opacity-70 group-hover:pointer-events-auto focus-within:opacity-90 focus-within:pointer-events-auto"}`}
+                >
+                  <PortalTooltip label="新建文件" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFile} aria-label="新建文件">
+                      <FilePlus className="size-4" />
+                    </button>
+                  </PortalTooltip>
                 <PortalTooltip label="新建文件夹" placement="bottom">
                   <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarNewFolder} aria-label="新建文件夹">
                     <FolderPlus className="size-4" />
@@ -1169,13 +1539,18 @@ export default function MaterialPackageNavPanel({
                     <ArrowClockwise className="size-4" />
                   </button>
                 </PortalTooltip>
-                <PortalTooltip label="展开到选中项" placement="bottom">
-                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarReveal} aria-label="展开到选中项">
-                    <CrosshairSimple className="size-4" />
+                <PortalTooltip label={selectedNode ? "删除" : "先选择一个节点再删除"} placement="bottom">
+                  <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={!selectedNode} onClick={handleToolbarDelete} aria-label="删除">
+                    <TrashIcon className="size-4" />
                   </button>
                 </PortalTooltip>
+                  <PortalTooltip label="展开到选中项" placement="bottom">
+                    <button type="button" className="btn btn-ghost btn-xs btn-square" disabled={packages.length === 0} onClick={handleToolbarReveal} aria-label="展开到选中项">
+                      <CrosshairSimple className="size-4" />
+                    </button>
+                  </PortalTooltip>
+                </div>
               </div>
-            </div>
 
             <div ref={treeItemsRef} data-role="material-package-tree-items">
               <input ref={importInputRef} type="file" className="hidden" multiple onChange={handleImportChange} />
@@ -1320,6 +1695,176 @@ export default function MaterialPackageNavPanel({
           </div>
         </dialog>
       ) : null}
+
+      {pendingDeleteDialog ? (
+        <dialog
+          open
+          className="modal modal-open"
+          onCancel={(event) => {
+            event.preventDefault();
+            if (pendingDeleteDialog.saving)
+              return;
+            setPendingDeleteDialog(null);
+          }}
+        >
+          <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
+            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+              <div className="text-sm font-semibold">确认删除</div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                aria-label="关闭"
+                onClick={() => {
+                  if (pendingDeleteDialog.saving)
+                    return;
+                  setPendingDeleteDialog(null);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-4 py-4 space-y-2">
+              <div className="text-sm">
+                {pendingDeleteDialog.kind === "package" && (
+                  <>将删除素材箱「{pendingDeleteDialog.label}」及其全部内容。</>
+                )}
+                {pendingDeleteDialog.kind === "folder" && (
+                  <>将删除文件夹「{pendingDeleteDialog.label}」及其全部内容。</>
+                )}
+                {pendingDeleteDialog.kind === "material" && (
+                  <>将删除文件「{pendingDeleteDialog.label}」。</>
+                )}
+              </div>
+              <div className="text-xs opacity-70">
+                该操作不可撤销。
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setPendingDeleteDialog(null)}
+                disabled={pendingDeleteDialog.saving}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-error btn-sm"
+                onClick={() => void runDeleteConfirmed(pendingDeleteDialog)}
+                disabled={pendingDeleteDialog.saving}
+              >
+                {pendingDeleteDialog.saving ? "删除中…" : "删除"}
+              </button>
+            </div>
+          </div>
+        </dialog>
+      ) : null}
+
+      {visibilityEditor && visibilityPos && typeof document !== "undefined" && createPortal(
+        <div
+          ref={visibilityPopoverRef}
+          className="z-[9999] w-[320px] overflow-hidden rounded-md border border-base-300 bg-base-100 text-base-content shadow-xl"
+          style={{
+            position: "fixed",
+            left: visibilityPos.left,
+            top: visibilityPos.top,
+          }}
+          role="dialog"
+          aria-label="可见性设置"
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-base-300 px-3 py-2">
+            <div className="text-[13px] font-semibold">可见性</div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs btn-square"
+              aria-label="关闭"
+              onClick={() => closeVisibilityEditor()}
+              disabled={visibilityEditor.saving}
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="px-3 py-3 space-y-3">
+            <div className="text-xs opacity-70 truncate" title={findPackageById(visibilityEditor.packageId)?.name ?? ""}>
+              {findPackageById(visibilityEditor.packageId)?.name ?? `素材包#${visibilityEditor.packageId}`}
+            </div>
+
+            <fieldset className="space-y-2">
+              <legend className="sr-only">可见性选项</legend>
+
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  ref={visibilityFirstInputRef}
+                  type="radio"
+                  className="radio radio-sm mt-0.5"
+                  name="material-package-visibility"
+                  checked={visibilityEditor.draft === 1}
+                  onChange={() => setVisibilityEditor(prev => prev ? { ...prev, draft: 1 } : prev)}
+                  disabled={visibilityEditor.saving}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm">公开（发布到素材广场）</div>
+                  <div className="text-[11px] opacity-70">素材包会出现在素材广场，其他人可以查看并获取。</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  className="radio radio-sm mt-0.5"
+                  name="material-package-visibility"
+                  checked={visibilityEditor.draft === 0}
+                  onChange={() => setVisibilityEditor(prev => prev ? { ...prev, draft: 0 } : prev)}
+                  disabled={visibilityEditor.saving}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm">私有（不在素材广场展示）</div>
+                  <div className="text-[11px] opacity-70">素材包仍保留在“我的素材包”里，但不会出现在素材广场。</div>
+                </div>
+              </label>
+            </fieldset>
+          </div>
+
+          <div className="flex justify-end gap-2 border-t border-base-300 px-3 py-2">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => closeVisibilityEditor()}
+              disabled={visibilityEditor.saving}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={visibilityEditor.saving || normalizePackageVisibility(findPackageById(visibilityEditor.packageId)?.visibility) === normalizePackageVisibility(visibilityEditor.draft)}
+              onClick={async () => {
+                if (visibilityEditor.saving)
+                  return;
+                const current = normalizePackageVisibility(findPackageById(visibilityEditor.packageId)?.visibility);
+                const next = normalizePackageVisibility(visibilityEditor.draft);
+                if (current === next)
+                  return;
+                setVisibilityEditor(prev => prev ? { ...prev, saving: true } : prev);
+                try {
+                  await savePackageVisibility({ packageId: visibilityEditor.packageId, visibility: next });
+                  closeVisibilityEditor();
+                }
+                catch (error) {
+                  setVisibilityEditor(prev => prev ? { ...prev, saving: false } : prev);
+                  const message = error instanceof Error ? error.message : "保存失败";
+                  window.alert(message);
+                }
+              }}
+            >
+              {visibilityEditor.saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {pendingImportDialog ? (
         <dialog
