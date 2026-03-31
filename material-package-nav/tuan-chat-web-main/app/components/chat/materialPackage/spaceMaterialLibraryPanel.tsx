@@ -13,7 +13,7 @@ import MaterialPackageSquareView from "@/components/chat/materialPackage/materia
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { draftCreateFolder, draftCreateMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
-import { ChevronDown, FolderIcon } from "@/icons";
+import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { ArrowClockwise, CrosshairSimple, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
@@ -282,10 +282,15 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend, setUseBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
   const [collapsedBySpace, setCollapsedBySpace] = useLocalStorage<Record<string, boolean>>("tc:space-material-library:collapsed", {});
+  const [toolbarPinnedBySpace, setToolbarPinnedBySpace] = useLocalStorage<Record<string, boolean>>("tc:space-material-library:toolbar-pinned", {});
   const isCollapsed = Boolean(collapsedBySpace[String(spaceId)]);
+  const toolbarPinned = Boolean(toolbarPinnedBySpace[String(spaceId)]);
   const toggleCollapsed = useCallback(() => {
     setCollapsedBySpace(prev => ({ ...prev, [String(spaceId)]: !Boolean(prev[String(spaceId)]) }));
   }, [setCollapsedBySpace, spaceId]);
+  const toggleToolbarPinned = useCallback(() => {
+    setToolbarPinnedBySpace(prev => ({ ...prev, [String(spaceId)]: !Boolean(prev[String(spaceId)]) }));
+  }, [setToolbarPinnedBySpace, spaceId]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -638,91 +643,117 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         <span className="flex-1 truncate">局内素材库</span>
 
         {canEdit && (
-          <div className="flex items-center gap-1 opacity-90">
-            <PortalTooltip label="新建文件" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                disabled={!isValidId(activePackageId)}
-                onClick={() => { void handleToolbarNewFile(); }}
-                aria-label="新建文件"
-              >
-                <FilePlus className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label="新建文件夹" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                disabled={!isValidId(activePackageId)}
-                onClick={() => { void handleToolbarNewFolder(); }}
-                aria-label="新建文件夹"
-              >
-                <FolderPlus className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label="新建素材箱" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                onClick={() => { void handleCreate(); }}
-                aria-label="新建素材箱"
-              >
-                <Plus className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label="导入素材包" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                onClick={() => { setIsImportOpen(true); }}
-                aria-label="导入素材包"
-              >
-                <UploadSimple className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label="从我的素材包导入素材箱" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                onClick={() => { setIsImportFromMyOpen(true); }}
-                aria-label="从我的素材包导入"
-              >
-                <DownloadSimple className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label="刷新" placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                onClick={() => { void listQuery.refetch(); }}
-                aria-label="刷新"
-              >
-                <ArrowClockwise className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label={selectedNode?.kind === "package" ? "删除素材箱" : "先选中素材箱再删除"} placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                disabled={selectedNode?.kind !== "package"}
-                onClick={handleToolbarDelete}
-                aria-label="删除"
-              >
-                <TrashIcon className="size-4" />
-              </button>
-            </PortalTooltip>
-            <PortalTooltip label={selectedNode ? "展开到选中项" : "先选择一个节点"} placement="bottom">
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                disabled={!selectedNode}
-                onClick={handleToolbarReveal}
-                aria-label="展开到选中项"
-              >
-                <CrosshairSimple className="size-4" />
-              </button>
-            </PortalTooltip>
+          <div className="flex items-center gap-1">
+            <div
+              className="flex items-center gap-1 group/ops"
+              onClick={(e) => {
+                // 避免点按钮区域时触发 Header 的拖拽/选择逻辑
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+            >
+              <div className={`${toolbarPinned ? "flex" : "hidden group-hover/ops:flex"} items-center gap-1 opacity-90`}>
+                <PortalTooltip label="新建文件" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    disabled={!isValidId(activePackageId)}
+                    onClick={() => { void handleToolbarNewFile(); }}
+                    aria-label="新建文件"
+                  >
+                    <FilePlus className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label="新建文件夹" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    disabled={!isValidId(activePackageId)}
+                    onClick={() => { void handleToolbarNewFolder(); }}
+                    aria-label="新建文件夹"
+                  >
+                    <FolderPlus className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label="新建素材箱" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    onClick={() => { void handleCreate(); }}
+                    aria-label="新建素材箱"
+                  >
+                    <Plus className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label="导入素材包" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    onClick={() => { setIsImportOpen(true); }}
+                    aria-label="导入素材包"
+                  >
+                    <UploadSimple className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label="从我的素材包导入素材箱" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    onClick={() => { setIsImportFromMyOpen(true); }}
+                    aria-label="从我的素材包导入"
+                  >
+                    <DownloadSimple className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label="刷新" placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    onClick={() => { void listQuery.refetch(); }}
+                    aria-label="刷新"
+                  >
+                    <ArrowClockwise className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label={selectedNode?.kind === "package" ? "删除素材箱" : "先选中素材箱再删除"} placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    disabled={selectedNode?.kind !== "package"}
+                    onClick={handleToolbarDelete}
+                    aria-label="删除"
+                  >
+                    <TrashIcon className="size-4" />
+                  </button>
+                </PortalTooltip>
+                <PortalTooltip label={selectedNode ? "展开到选中项" : "先选择一个节点"} placement="bottom">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    disabled={!selectedNode}
+                    onClick={handleToolbarReveal}
+                    aria-label="展开到选中项"
+                  >
+                    <CrosshairSimple className="size-4" />
+                  </button>
+                </PortalTooltip>
+              </div>
+
+              <PortalTooltip label={toolbarPinned ? "隐藏工具栏（仍可悬浮显示）" : "显示工具栏"} placement="bottom">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={toggleToolbarPinned}
+                  aria-label="显示/隐藏工具栏"
+                  aria-pressed={toolbarPinned}
+                  title={toolbarPinned ? "隐藏工具栏（仍可悬浮显示）" : "显示工具栏"}
+                >
+                  <span className={`inline-flex transition-transform duration-150 ${toolbarPinned ? "rotate-[135deg]" : "group-hover/ops:rotate-[135deg]"}`}>
+                    <AddIcon />
+                  </span>
+                </button>
+              </PortalTooltip>
+            </div>
           </div>
         )}
       </div>
