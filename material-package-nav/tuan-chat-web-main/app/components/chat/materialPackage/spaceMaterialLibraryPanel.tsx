@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 
 import ConfirmModal from "@/components/common/comfirmModel";
@@ -15,6 +15,7 @@ import { setMaterialBatchDragData } from "@/components/chat/materialPackage/mate
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { parseSpaceLibrarySelectedNodeRef, toggleExpandedIds } from "@/components/chat/materialPackage/spaceMaterialLibraryOps";
 import { isClickSuppressed, markClickSuppressed } from "@/components/chat/materialPackage/materialPackageClickSuppressor";
 import type { MaterialFolderNode, MaterialNode } from "@/components/materialPackage/materialPackageApi";
 import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReorderNode } from "@/components/chat/materialPackage/materialPackageDraft";
@@ -734,7 +735,20 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       return base;
     });
   }, [packages]);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedPackageIds, setExpandedPackageIds] = useState<number[]>([]);
+  const expandedPackageIdSet = useMemo(() => new Set(expandedPackageIds.map(id => Number(id))), [expandedPackageIds]);
+  const toggleExpandedPackage = useCallback((spacePackageId: number) => {
+    setExpandedPackageIds(prev => toggleExpandedIds(prev, spacePackageId));
+  }, []);
+  const ensureExpandedPackage = useCallback((spacePackageId: number) => {
+    const nextId = Number(spacePackageId);
+    if (!Number.isFinite(nextId) || nextId <= 0)
+      return;
+    setExpandedPackageIds((prev) => {
+      const base = Array.isArray(prev) ? prev : [];
+      return base.includes(nextId) ? prev : [...base, nextId];
+    });
+  }, []);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isImportFromMyOpen, setIsImportFromMyOpen] = useState(false);
   const [activePreview, setActivePreview] = useState<MaterialPreviewPayload | null>(null);
@@ -750,7 +764,12 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const [moveDropTargetKey, setMoveDropTargetKey] = useState<string | null>(null);
   const [reorderDropTargetKey, setReorderDropTargetKey] = useState<string | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const [pendingDeleteTarget, setPendingDeleteTarget] = useState<null | {
+    kind: "package" | "folder" | "material";
+    packageId: number;
+    parentPath: string[];
+    name: string;
+  }>(null);
   const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
   const [selectedMaterialKeys, setSelectedMaterialKeys] = useState<Set<string>>(() => new Set());
   const localImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -798,7 +817,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
   useEffect(() => {
     clearMaterialSelection();
-  }, [clearMaterialSelection, expandedId, spaceId, useBackend]);
+  }, [clearMaterialSelection, expandedPackageIds, spaceId, useBackend]);
 
   const dockPreview = useCallback((payload: MaterialPreviewPayload, options?: { index?: number; placement?: "top" | "bottom" }) => {
     setDockedPreview(payload);
@@ -866,19 +885,53 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const activePackageId = useMemo(() => {
     if (selectedNode?.packageId)
       return selectedNode.packageId;
-    if (expandedId)
-      return expandedId;
+    if (expandedPackageIds.length) {
+      const last = expandedPackageIds[expandedPackageIds.length - 1];
+      return isValidId(last) ? last : null;
+    }
     return null;
-  }, [expandedId, selectedNode?.packageId]);
+  }, [expandedPackageIds, selectedNode?.packageId]);
 
-  const expandedDetailQuery = useQuery({
-    enabled: useBackend && isValidId(expandedId),
-    queryKey: isValidId(expandedId) ? buildDetailQueryKey(expandedId, useBackend) : ["spaceMaterialPackage", "none", useBackend],
-    queryFn: () => getSpaceMaterialPackage(expandedId as number),
-    staleTime: 30 * 1000,
-    retry: false,
-    refetchOnWindowFocus: false,
+  const expandedDetailIds = useMemo(() => {
+    if (!useBackend)
+      return [];
+    const uniq: number[] = [];
+    const seen = new Set<number>();
+    for (const raw of expandedPackageIds) {
+      const id = Number(raw);
+      if (!isValidId(id))
+        continue;
+      if (seen.has(id))
+        continue;
+      seen.add(id);
+      uniq.push(id);
+    }
+    return uniq;
+  }, [expandedPackageIds, useBackend]);
+
+  const expandedDetailQueries = useQueries({
+    queries: expandedDetailIds.map((spacePackageId) => ({
+      enabled: useBackend,
+      queryKey: buildDetailQueryKey(spacePackageId, useBackend),
+      queryFn: () => getSpaceMaterialPackage(spacePackageId),
+      staleTime: 30 * 1000,
+      retry: false,
+      refetchOnWindowFocus: false,
+    })),
   });
+
+  const expandedDetailContentById = useMemo(() => {
+    const map = new Map<number, MaterialPackageContent>();
+    for (let i = 0; i < expandedDetailIds.length; i += 1) {
+      const id = expandedDetailIds[i];
+      const data = (expandedDetailQueries[i] as any)?.data ?? null;
+      const content = data?.content ?? null;
+      if (content) {
+        map.set(id, content as MaterialPackageContent);
+      }
+    }
+    return map;
+  }, [expandedDetailIds, expandedDetailQueries]);
 
   type VisibleItem =
     | { kind: "dockPreview"; key: "dock-preview"; payload: MaterialPreviewPayload }
@@ -913,11 +966,6 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
   const baseVisibleItems = useMemo(() => {
     const items: VisibleItem[] = [];
-
-    const expandedPackageId = isValidId(expandedId) ? expandedId : null;
-    const expandedDetailContent = useBackend && expandedPackageId != null
-      ? (expandedDetailQuery.data?.content ?? null)
-      : null;
 
     const pushNode = (spacePackageId: number, node: any, folderPath: string[], pathTokens: string[], depth: number) => {
       const indent = depth * 14;
@@ -982,9 +1030,10 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       if (!isValidId(spacePackageId))
         continue;
 
-      const isExpanded = expandedPackageId != null && Number(expandedPackageId) === Number(spacePackageId);
-      const content: MaterialPackageContent = isExpanded && expandedDetailContent
-        ? (expandedDetailContent as MaterialPackageContent)
+      const isExpanded = expandedPackageIdSet.has(Number(spacePackageId));
+      const expandedContent = useBackend ? (expandedDetailContentById.get(Number(spacePackageId)) ?? null) : null;
+      const content: MaterialPackageContent = isExpanded && expandedContent
+        ? (expandedContent as MaterialPackageContent)
         : ((pkg.content ?? buildEmptyMaterialPackageContent()) as MaterialPackageContent);
 
       const rootNodes = normalizeNodes((content as any)?.root);
@@ -1010,7 +1059,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }
 
     return items;
-  }, [collapsedFolderByKey, expandedDetailQuery.data?.content, expandedId, packages, spaceId, useBackend]);
+  }, [collapsedFolderByKey, expandedDetailContentById, expandedPackageIdSet, packages, spaceId, useBackend]);
 
   const baseItemCount = baseVisibleItems.length;
   const resolvedDockIndex = useMemo(() => clampInt(dockedIndex, 0, baseItemCount), [baseItemCount, clampInt, dockedIndex]);
@@ -1163,7 +1212,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
   const closeDeleteConfirm = () => {
     setIsDeleteConfirmOpen(false);
-    setPendingDeleteId(null);
+    setPendingDeleteTarget(null);
   };
 
   const myPackagesQuery = useQuery({
@@ -1403,7 +1452,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       }
 
       // UI：选中并滚动到目标
-      setExpandedId(dest.packageId);
+      ensureExpandedPackage(dest.packageId);
       const nextKey = normalizedNode.type === "folder"
         ? `folder:${dest.packageId}:${[...dest.folderPath.map(makeFolderToken), makeFolderToken(normalizedNode.name)].join("/")}`
         : `material:${dest.packageId}:${[...dest.folderPath.map(makeFolderToken), makeMaterialToken(normalizedNode.name)].join("/")}`;
@@ -1478,7 +1527,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         const nextTokens = nextPathNames.map(makeFolderToken);
         const nextKey = `folder:${spacePackageId}:${nextTokens.join("/")}`;
         setSelectedNode({ kind: "folder", key: nextKey, packageId: spacePackageId });
-        setExpandedId(spacePackageId);
+        ensureExpandedPackage(spacePackageId);
         setTimeout(() => {
           document.querySelector(`[data-node-key="${nextKey}"]`)?.scrollIntoView({ block: "nearest" });
         }, 0);
@@ -1501,7 +1550,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const nextTokens = [...snapshot.folderPath.map(makeFolderToken), makeMaterialToken(finalName)];
       const nextKey = `material:${spacePackageId}:${nextTokens.join("/")}`;
       setSelectedNode({ kind: "material", key: nextKey, packageId: spacePackageId });
-      setExpandedId(spacePackageId);
+      ensureExpandedPackage(spacePackageId);
       setTimeout(() => {
         document.querySelector(`[data-node-key="${nextKey}"]`)?.scrollIntoView({ block: "nearest" });
       }, 0);
@@ -1550,7 +1599,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       writeMockPackages(spaceId, [next, ...base]);
       await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
       toast.success("mock：已导入到局内素材库");
-      setExpandedId(next.spacePackageId);
+      ensureExpandedPackage(next.spacePackageId);
       closeImportFromMy();
       return;
     }
@@ -1562,7 +1611,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       toast.success("已导入到局内素材库");
       const maybeId = (result as any)?.spacePackageId;
       if (typeof maybeId === "number" && Number.isFinite(maybeId) && maybeId > 0) {
-        setExpandedId(maybeId);
+        ensureExpandedPackage(maybeId);
       }
       closeImportFromMy();
     }
@@ -1606,7 +1655,10 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         content: buildEmptyMaterialPackageContent(),
       });
       toast.success("已创建局内素材箱", { id: toastId });
-      setExpandedId(created?.spacePackageId ?? null);
+      const createdId = (created as any)?.spacePackageId;
+      if (typeof createdId === "number" && Number.isFinite(createdId) && createdId > 0) {
+        ensureExpandedPackage(createdId);
+      }
       await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
     }
     catch (error) {
@@ -1656,7 +1708,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
     const nodeKey = `material:${targetPackageId}:material:${finalName}`;
     setSelectedNode({ kind: "material", key: nodeKey, packageId: targetPackageId });
-    setExpandedId(targetPackageId);
+    ensureExpandedPackage(targetPackageId);
     toast.success("已新建文件");
     setTimeout(() => {
       document.querySelector(`[data-node-key="${nodeKey}"]`)?.scrollIntoView({ block: "nearest" });
@@ -1690,7 +1742,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 	    const tokens = [...folderPath.map(makeFolderToken), makeFolderToken(finalName)];
 	    const nodeKey = `folder:${targetPackageId}:${tokens.join("/")}`;
 	    setSelectedNode({ kind: "folder", key: nodeKey, packageId: targetPackageId });
-	    setExpandedId(targetPackageId);
+	    ensureExpandedPackage(targetPackageId);
 	    setCollapsedFolderByKey((prev) => {
 	      let changed = false;
 	      const next: Record<string, boolean> = { ...prev };
@@ -1710,13 +1762,36 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 	  }, [activePackageId, getSelectedFolderPath, loadPackageContent, savePackageContent, selectedNode, setCollapsedFolderByKey]);
 
   const handleToolbarDelete = useCallback(() => {
-    if (selectedNode?.kind !== "package" || !isValidId(selectedNode.packageId)) {
-      window.alert("请先选中一个局内素材箱再删除。");
+    if (!canEdit) {
+      toast.error("当前无权限修改局内素材库。");
       return;
     }
-    setPendingDeleteId(selectedNode.packageId);
+    if (!selectedNode || !isValidId(selectedNode.packageId)) {
+      window.alert("请先选中要删除的项。");
+      return;
+    }
+
+    if (selectedNode.kind === "package") {
+      const id = Number(selectedNode.packageId);
+      const label = packages.find(p => Number(p.spacePackageId) === id)?.name ?? `素材箱#${id}`;
+      setPendingDeleteTarget({ kind: "package", packageId: id, parentPath: [], name: label });
+      setIsDeleteConfirmOpen(true);
+      return;
+    }
+
+    const parsed = parseSpaceLibrarySelectedNodeRef(selectedNode);
+    if (!parsed) {
+      window.alert("无法解析选中项，删除失败。");
+      return;
+    }
+    setPendingDeleteTarget({
+      kind: parsed.kind,
+      packageId: parsed.packageId,
+      parentPath: parsed.parentPath,
+      name: parsed.name,
+    });
     setIsDeleteConfirmOpen(true);
-  }, [selectedNode]);
+  }, [canEdit, packages, selectedNode]);
 
 	  const buildMessagesFromFile = useCallback(async (file: File) => {
 	    const type = String(file.type ?? "").toLowerCase();
@@ -1801,7 +1876,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }
 
     await savePackageContent(args.target.packageId, nextContent);
-    setExpandedId(args.target.packageId);
+    ensureExpandedPackage(args.target.packageId);
     setPendingLocalImportTarget(null);
 
     if (lastKey) {
@@ -1861,31 +1936,55 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   }, [activePackageId, applyLocalImportFiles, getSelectedFolderPath, pendingLocalImportTarget]);
 
   const handleDelete = useCallback(async () => {
-    const id = pendingDeleteId;
-    if (!isValidId(id))
+    const target = pendingDeleteTarget;
+    if (!target || !isValidId(target.packageId))
       return;
     closeDeleteConfirm();
 
-    if (!useBackend) {
-      const base = readMockPackages(spaceId);
-      writeMockPackages(spaceId, base.filter(p => p.spacePackageId !== id));
-      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
-      toast.success("mock：已删除");
+    const packageId = Number(target.packageId);
+
+    if (target.kind === "package") {
+      if (!useBackend) {
+        const base = readMockPackages(spaceId);
+        writeMockPackages(spaceId, base.filter(p => p.spacePackageId !== packageId));
+        await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+        setExpandedPackageIds(prev => prev.filter(id => Number(id) !== packageId));
+        setSelectedNode(prev => (prev && Number(prev.packageId) === packageId ? null : prev));
+        toast.success("mock：已删除");
+        return;
+      }
+
+      const toastId = `space-material-delete:${packageId}`;
+      toast.loading("正在删除…", { id: toastId });
+      try {
+        await deleteSpaceMaterialPackage(packageId);
+        toast.success("已删除", { id: toastId });
+        await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+        setExpandedPackageIds(prev => prev.filter(id => Number(id) !== packageId));
+        setSelectedNode(prev => (prev && Number(prev.packageId) === packageId ? null : prev));
+      }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "删除失败";
+        toast.error(message, { id: toastId });
+      }
       return;
     }
 
-    const toastId = `space-material-delete:${id}`;
-    toast.loading("正在删除…", { id: toastId });
     try {
-      await deleteSpaceMaterialPackage(id);
-      toast.success("已删除", { id: toastId });
-      await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
+      const baseContent = await loadPackageContent(packageId);
+      const nextContent = target.kind === "folder"
+        ? draftDeleteFolder(baseContent, target.parentPath, target.name)
+        : draftDeleteMaterial(baseContent, target.parentPath, target.name);
+      await savePackageContent(packageId, nextContent);
+      clearMaterialSelection();
+      setSelectedNode({ kind: "package", key: `root:${packageId}`, packageId });
+      toast.success("已删除");
     }
     catch (error) {
       const message = error instanceof Error ? error.message : "删除失败";
-      toast.error(message, { id: toastId });
+      toast.error(message);
     }
-  }, [pendingDeleteId, queryClient, spaceId, useBackend]);
+  }, [clearMaterialSelection, closeDeleteConfirm, loadPackageContent, pendingDeleteTarget, queryClient, savePackageContent, spaceId, useBackend]);
 
   const renderVisibleItem = useCallback((item: VisibleItem) => {
     if (item.kind === "dockPreview") {
@@ -2029,7 +2128,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 	                return;
 	              }
 	              setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
-	              setExpandedId(item.isExpanded ? null : spacePackageId);
+	              toggleExpandedPackage(spacePackageId);
 	            }}
             onDoubleClick={(e) => {
               const target = e.target as HTMLElement | null;
@@ -2054,7 +2153,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                setExpandedId(item.isExpanded ? null : spacePackageId);
+                toggleExpandedPackage(spacePackageId);
               }}
               onDoubleClick={(e) => {
                 e.preventDefault();
@@ -2487,7 +2586,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         </div>
       </div>
     );
-  }, [canEdit, clearMaterialSelection, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, reorderDropTargetKey, reorderNode, reorderSpacePackageOrder, selectedMaterialKeys, selectedMaterialPayloadsInOrder, selectedNode?.key, setExpandedId, setMoveDropTargetKey, setReorderDropTargetKey, setSpacePackageReorderDrop, spaceId, spacePackageReorderDrop?.key, spacePackageReorderDrop?.placement, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
+  }, [canEdit, clearMaterialSelection, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, ensureExpandedPackage, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, reorderDropTargetKey, reorderNode, reorderSpacePackageOrder, selectedMaterialKeys, selectedMaterialPayloadsInOrder, selectedNode?.key, setMoveDropTargetKey, setReorderDropTargetKey, setSpacePackageReorderDrop, spaceId, spacePackageReorderDrop?.key, spacePackageReorderDrop?.placement, startInlineRename, toggleExpandedPackage, toggleFolderCollapsed, treeItemsRef, undockPreview]);
 
   return (
     <div
@@ -2763,7 +2862,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                         updateTime: now,
                       };
                       writeMockPackages(spaceId, [next, ...base]);
-                      setExpandedId(next.spacePackageId);
+                      ensureExpandedPackage(next.spacePackageId);
                     }
                   }
                   setIsImportOpen(false);
@@ -2865,10 +2964,18 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       )}
 
       <ConfirmModal
-        isOpen={isDeleteConfirmOpen}
+        isOpen={isDeleteConfirmOpen && Boolean(pendingDeleteTarget)}
         onClose={closeDeleteConfirm}
-        title="删除局内素材箱"
-        message="确认删除该素材箱吗？会清空其中所有子项。"
+        title="确认删除"
+        message={
+          pendingDeleteTarget?.kind === "package"
+            ? `将删除素材箱「${pendingDeleteTarget.name}」及其全部内容。该操作不可撤销。`
+          : pendingDeleteTarget?.kind === "folder"
+              ? `将删除文件夹「${pendingDeleteTarget.name}」（包含子内容）。该操作不可撤销。`
+              : pendingDeleteTarget?.kind === "material"
+                ? `将删除文件「${pendingDeleteTarget.name}」。该操作不可撤销。`
+                : ""
+        }
         onConfirm={() => { void handleDelete(); }}
         confirmText="删除"
         cancelText="取消"
