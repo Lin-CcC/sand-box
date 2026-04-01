@@ -2531,131 +2531,135 @@ export default function MaterialPackageNavPanel({
         提示：双击打开预览；也可以拖拽到右侧主区域。
       </div>
 
-      {pendingChoosePackage ? (
-        <dialog
-          open
-          className="modal modal-open z-[10050]"
-          onCancel={(event) => {
-            event.preventDefault();
-            setPendingChoosePackage(null);
-            setPendingChoosePackageId(null);
-          }}
-        >
-          <div className="modal-box max-w-[420px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
-            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
-              <div className="text-sm font-semibold">选择素材箱</div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                aria-label="关闭"
-                onClick={() => {
-                  setPendingChoosePackage(null);
-                  setPendingChoosePackageId(null);
-                }}
-              >
-                ✕
-              </button>
-            </div>
-            <div className="px-4 py-3 space-y-3">
-              <div className="text-xs opacity-70">
-                当前有多个素材箱，请先选择一个作为默认操作位置。
-              </div>
-              <div className="space-y-2">
-                {packages.map((pkg) => {
-                  const id = Number(pkg.packageId);
-                  const label = pkg.name ?? `素材包#${id}`;
-                  return (
-                    <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input
-                        type="radio"
-                        className="radio radio-sm"
-                        name="choose-package"
-                        checked={Number(pendingChoosePackageId) === id}
-                        onChange={() => setPendingChoosePackageId(id)}
-                      />
-                      <span className="truncate">{label}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setPendingChoosePackage(null);
-                  setPendingChoosePackageId(null);
-                }}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={pendingChoosePackageId == null}
-                onClick={() => {
-                  if (pendingChoosePackageId == null)
-                    return;
-                  const packageId = Number(pendingChoosePackageId);
-                  setDefaultTargetPackageId(packageId);
-                  const key = `root:${packageId}`;
-                  const label = findPackageById(packageId)?.name ?? `素材包#${packageId}`;
-                  const payload = toPreviewPayload({ kind: "package", packageId, label, path: [] });
-                  setSelectedNode({ kind: "package", key, payload });
-                  setPendingChoosePackage(null);
-                  setPendingChoosePackageId(null);
+      {pendingChoosePackage && typeof document !== "undefined"
+        ? createPortal(
+            <dialog
+              open
+              className="modal modal-open z-[10050]"
+              onCancel={(event) => {
+                event.preventDefault();
+                setPendingChoosePackage(null);
+                setPendingChoosePackageId(null);
+              }}
+            >
+              <div className="modal-box max-w-[420px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
+                <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+                  <div className="text-sm font-semibold">选择素材箱</div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    aria-label="关闭"
+                    onClick={() => {
+                      setPendingChoosePackage(null);
+                      setPendingChoosePackageId(null);
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="px-4 py-3 space-y-3">
+                  <div className="text-xs opacity-70">
+                    当前有多个素材箱，请先选择一个作为默认操作位置。
+                  </div>
+                  <div className="space-y-2">
+                    {packages.map((pkg) => {
+                      const id = Number(pkg.packageId);
+                      const label = pkg.name ?? `素材包#${id}`;
+                      return (
+                        <label key={id} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <input
+                            type="radio"
+                            className="radio radio-sm"
+                            name="choose-package"
+                            checked={Number(pendingChoosePackageId) === id}
+                            onChange={() => setPendingChoosePackageId(id)}
+                          />
+                          <span className="truncate">{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setPendingChoosePackage(null);
+                      setPendingChoosePackageId(null);
+                    }}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={pendingChoosePackageId == null}
+                    onClick={() => {
+                      if (pendingChoosePackageId == null)
+                        return;
+                      const packageId = Number(pendingChoosePackageId);
+                      setDefaultTargetPackageId(packageId);
+                      const key = `root:${packageId}`;
+                      const label = findPackageById(packageId)?.name ?? `素材包#${packageId}`;
+                      const payload = toPreviewPayload({ kind: "package", packageId, label, path: [] });
+                      setSelectedNode({ kind: "package", key, payload });
+                      setPendingChoosePackage(null);
+                      setPendingChoosePackageId(null);
 
-                  if (pendingChoosePackage.action === "new-file") {
-                    void runToolbarNewFile({ packageId, folderPath: [] });
-                  }
-                  else if (pendingChoosePackage.action === "new-folder") {
-                    void runToolbarNewFolder({ packageId, folderPath: [] });
-                  }
-                  else {
-                    setPendingImportTarget({ packageId, folderPath: [] });
-                    const el = importInputRef.current;
-                    if (el) {
-                      el.value = "";
-                      el.click();
-                    }
-                  }
-                }}
-              >
-                确定
-              </button>
-            </div>
-          </div>
-        </dialog>
-      ) : null}
+                      if (pendingChoosePackage.action === "new-file") {
+                        void runToolbarNewFile({ packageId, folderPath: [] });
+                      }
+                      else if (pendingChoosePackage.action === "new-folder") {
+                        void runToolbarNewFolder({ packageId, folderPath: [] });
+                      }
+                      else {
+                        setPendingImportTarget({ packageId, folderPath: [] });
+                        const el = importInputRef.current;
+                        if (el) {
+                          el.value = "";
+                          el.click();
+                        }
+                      }
+                    }}
+                  >
+                    确定
+                  </button>
+                </div>
+              </div>
+            </dialog>,
+            document.body,
+          )
+        : null}
 
-      {pendingDeleteDialog ? (
-        <dialog
-          open
-          className="modal modal-open z-[10050]"
-          onCancel={(event) => {
-            event.preventDefault();
-            if (pendingDeleteDialog.saving)
-              return;
-            setPendingDeleteDialog(null);
-          }}
-        >
-          <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
-            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
-              <div className="text-sm font-semibold">确认删除</div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-xs btn-square"
-                aria-label="关闭"
-                onClick={() => {
-                  if (pendingDeleteDialog.saving)
-                    return;
-                  setPendingDeleteDialog(null);
-                }}
-              >
-                ✕
-              </button>
-            </div>
+      {pendingDeleteDialog && typeof document !== "undefined"
+        ? createPortal(
+            <dialog
+              open
+              className="modal modal-open z-[10050]"
+              onCancel={(event) => {
+                event.preventDefault();
+                if (pendingDeleteDialog.saving)
+                  return;
+                setPendingDeleteDialog(null);
+              }}
+            >
+              <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
+                <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+                  <div className="text-sm font-semibold">确认删除</div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    aria-label="关闭"
+                    onClick={() => {
+                      if (pendingDeleteDialog.saving)
+                        return;
+                      setPendingDeleteDialog(null);
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
             <div className="px-4 py-4 space-y-2">
               <div className="text-sm">
                 {pendingDeleteDialog.kind === "package" && (
@@ -2690,9 +2694,11 @@ export default function MaterialPackageNavPanel({
                 {pendingDeleteDialog.saving ? "删除中…" : "删除"}
               </button>
             </div>
-          </div>
-        </dialog>
-      ) : null}
+              </div>
+            </dialog>,
+            document.body,
+          )
+        : null}
 
       {visibilityEditor && visibilityPos && typeof document !== "undefined" && createPortal(
         <div
@@ -2799,16 +2805,17 @@ export default function MaterialPackageNavPanel({
         document.body,
       )}
 
-      {pendingImportDialog ? (
-        <dialog
-          open
-          className="modal modal-open z-[10050]"
-          onCancel={(event) => {
-            event.preventDefault();
-            setPendingImportDialog(null);
-          }}
-        >
-          <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
+      {pendingImportDialog && typeof document !== "undefined"
+        ? createPortal(
+            <dialog
+              open
+              className="modal modal-open z-[10050]"
+              onCancel={(event) => {
+                event.preventDefault();
+                setPendingImportDialog(null);
+              }}
+            >
+              <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
             <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
               <div className="text-sm font-semibold">检测到重名文件</div>
               <button
@@ -2849,9 +2856,11 @@ export default function MaterialPackageNavPanel({
                 覆盖
               </button>
             </div>
-          </div>
-        </dialog>
-      ) : null}
+              </div>
+            </dialog>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
