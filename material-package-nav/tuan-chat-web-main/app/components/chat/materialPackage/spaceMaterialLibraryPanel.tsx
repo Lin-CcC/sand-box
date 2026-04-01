@@ -5,7 +5,6 @@ import { createPortal } from "react-dom";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 
-import ConfirmModal from "@/components/common/comfirmModel";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import PortalTooltip from "@/components/common/portalTooltip";
 import { buildEmptyMaterialPackageContent } from "@/components/chat/materialPackage/materialPackageDraft";
@@ -15,7 +14,13 @@ import { setMaterialBatchDragData } from "@/components/chat/materialPackage/mate
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
-import { parseSpaceLibrarySelectedNodeRef, toggleExpandedIds } from "@/components/chat/materialPackage/spaceMaterialLibraryOps";
+import {
+  canDeleteSpaceLibrarySelectedNode,
+  getSpaceLibraryDeleteDialogCopy,
+  getSpaceLibraryDeleteTooltipLabel,
+  parseSpaceLibrarySelectedNodeRef,
+  toggleExpandedIds,
+} from "@/components/chat/materialPackage/spaceMaterialLibraryOps";
 import { isClickSuppressed, markClickSuppressed } from "@/components/chat/materialPackage/materialPackageClickSuppressor";
 import type { MaterialFolderNode, MaterialNode } from "@/components/materialPackage/materialPackageApi";
 import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReorderNode } from "@/components/chat/materialPackage/materialPackageDraft";
@@ -2738,11 +2743,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                     <ArrowClockwise className="size-4" />
                   </button>
                 </PortalTooltip>
-                <PortalTooltip label={selectedNode?.kind === "package" ? "删除素材箱" : "先选中素材箱再删除"} placement="bottom">
+                <PortalTooltip
+                  label={canEdit ? getSpaceLibraryDeleteTooltipLabel(selectedNode) : "当前无权限修改局内素材库"}
+                  placement="bottom"
+                >
                   <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    disabled={selectedNode?.kind !== "package"}
+                    disabled={!canEdit || !canDeleteSpaceLibrarySelectedNode(selectedNode)}
                     onClick={handleToolbarDelete}
                     aria-label="删除"
                   >
@@ -2963,24 +2971,56 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         )
       )}
 
-      <ConfirmModal
-        isOpen={isDeleteConfirmOpen && Boolean(pendingDeleteTarget)}
-        onClose={closeDeleteConfirm}
-        title="确认删除"
-        message={
-          pendingDeleteTarget?.kind === "package"
-            ? `将删除素材箱「${pendingDeleteTarget.name}」及其全部内容。该操作不可撤销。`
-          : pendingDeleteTarget?.kind === "folder"
-              ? `将删除文件夹「${pendingDeleteTarget.name}」（包含子内容）。该操作不可撤销。`
-              : pendingDeleteTarget?.kind === "material"
-                ? `将删除文件「${pendingDeleteTarget.name}」。该操作不可撤销。`
-                : ""
-        }
-        onConfirm={() => { void handleDelete(); }}
-        confirmText="删除"
-        cancelText="取消"
-        variant="danger"
-      />
+      {isDeleteConfirmOpen && pendingDeleteTarget && typeof document !== "undefined"
+        ? createPortal(
+            <dialog
+              open
+              className="modal modal-open z-[10050]"
+              onCancel={(event) => {
+                event.preventDefault();
+                closeDeleteConfirm();
+              }}
+            >
+              <div className="modal-box max-w-[460px] border border-base-300 bg-base-100 p-0 text-base-content shadow-xl">
+                <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+                  <div className="text-sm font-semibold">确认删除</div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-square"
+                    aria-label="关闭"
+                    onClick={closeDeleteConfirm}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {(() => {
+                  const copy = getSpaceLibraryDeleteDialogCopy(pendingDeleteTarget);
+                  return (
+                    <div className="px-4 py-4 space-y-2">
+                      <div className="text-sm">{copy.primary}</div>
+                      <div className="text-xs opacity-70">{copy.secondary}</div>
+                    </div>
+                  );
+                })()}
+
+                <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={closeDeleteConfirm}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-error btn-sm"
+                    onClick={() => { void handleDelete(); }}
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            </dialog>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

@@ -51,3 +51,40 @@ export function parseSpaceLibrarySelectedNodeRef(selected: {
   return { kind: "folder", packageId, parentPath: folderNames.slice(0, -1), name };
 }
 
+export function canDeleteSpaceLibrarySelectedNode(
+  selected: null | { kind: "package" | "folder" | "material" },
+) {
+  return Boolean(selected);
+}
+
+export function getSpaceLibraryDeleteTooltipLabel(
+  selected: null | { kind: "package" | "folder" | "material" },
+) {
+  if (!selected)
+    return "先选中要删除的项";
+  if (selected.kind === "package")
+    return "删除素材箱";
+  if (selected.kind === "folder")
+    return "删除文件夹";
+  return "删除文件";
+}
+
+export function getSpaceLibraryDeleteDialogCopy(target: { kind: "package" | "folder" | "material"; name: string }) {
+  const name = String(target?.name ?? "").trim();
+  if (target.kind === "package") {
+    return {
+      primary: `将删除素材箱「${name}」及其全部内容。`,
+      secondary: "该操作不可撤销。",
+    };
+  }
+  if (target.kind === "folder") {
+    return {
+      primary: `将删除文件夹「${name}」及其全部内容。`,
+      secondary: "该操作不可撤销。",
+    };
+  }
+  return {
+    primary: `将删除文件「${name}」。`,
+    secondary: "该操作不可撤销。",
+  };
+}
