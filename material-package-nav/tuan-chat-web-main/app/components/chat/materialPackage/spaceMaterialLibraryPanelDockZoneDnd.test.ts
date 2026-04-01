@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { MATERIAL_PREVIEW_DRAG_TYPE } from "@/components/chat/materialPackage/materialPackageDnd";
-import { SPACE_MATERIAL_MOVE_TYPE, shouldCaptureSpaceMaterialDockZonePreviewDnd } from "@/components/chat/materialPackage/spaceMaterialLibraryPanel";
+import {
+  SPACE_MATERIAL_MOVE_TYPE,
+  shouldCaptureSpaceMaterialDockZonePreviewDnd,
+} from "@/components/chat/materialPackage/spaceMaterialLibraryPanel";
 
 function makeDataTransfer(types: string[]) {
   return {
@@ -22,7 +25,10 @@ describe("spaceMaterialLibraryPanel dock-zone capture", () => {
   });
 
   it("does not capture space move drags", () => {
-    const dt = makeDataTransfer([SPACE_MATERIAL_MOVE_TYPE, MATERIAL_PREVIEW_DRAG_TYPE]);
+    const dt = makeDataTransfer([
+      SPACE_MATERIAL_MOVE_TYPE,
+      MATERIAL_PREVIEW_DRAG_TYPE,
+    ]);
     expect(shouldCaptureSpaceMaterialDockZonePreviewDnd(dt)).toBe(false);
   });
 
