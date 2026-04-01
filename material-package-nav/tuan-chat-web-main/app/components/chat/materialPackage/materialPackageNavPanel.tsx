@@ -24,8 +24,9 @@ import type { SelectedExplorerNode } from "@/components/chat/materialPackage/mat
 import { autoRenameVsCodeLike, folderPathEqual, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { isClickSuppressed, markClickSuppressed } from "@/components/chat/materialPackage/materialPackageClickSuppressor";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
-import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftMoveNode, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
+import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftMoveNode, draftMoveNodeAcrossContents, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
+import { computeVisibilityPopoverPos } from "@/components/chat/materialPackage/materialPackageVisibilityPopoverPos";
 import {
   isMaterialPreviewDrag,
   getMaterialPreviewDragData,
@@ -618,17 +619,22 @@ export default function MaterialPackageNavPanel({
     const packageId = Number(source.packageId);
     if (!Number.isFinite(packageId) || packageId <= 0)
       return;
-    if (Number(dest.packageId) !== packageId) {
-      toast.error("当前仅支持同一素材箱内移动。");
+    const destPackageId = Number(dest.packageId);
+    if (!Number.isFinite(destPackageId) || destPackageId <= 0)
+      return;
+
+    const srcPkg = findPackageById(packageId);
+    if (!srcPkg) {
+      toast.error("源素材箱不存在或已被刷新。");
       return;
     }
-
-    const pkg = findPackageById(packageId);
-    if (!pkg) {
+    const destPkg = findPackageById(destPackageId);
+    if (!destPkg) {
       toast.error("目标素材箱不存在或已被刷新。");
       return;
     }
-    const baseContent = pkg.content ?? buildEmptyMaterialPackageContent();
+    const baseSourceContent = srcPkg.content ?? buildEmptyMaterialPackageContent();
+    const baseDestContent = destPkg.content ?? buildEmptyMaterialPackageContent();
 
     const sourceFolderNames = payloadPathToFolderNames(source.path);
     const sourceName = source.kind === "folder"
@@ -637,17 +643,17 @@ export default function MaterialPackageNavPanel({
     if (!sourceName)
       return;
 
-	    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
-	    const destFolderPath = Array.isArray(dest.folderPath) ? dest.folderPath : [];
+    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+    const destFolderPath = Array.isArray(dest.folderPath) ? dest.folderPath : [];
 
-	    if (folderPathEqual(sourceParentPath, destFolderPath)) {
-	      // 拖回原文件夹：视为 no-op，避免误触发自动重命名
-	      return;
-	    }
+    if (Number(destPackageId) === packageId && folderPathEqual(sourceParentPath, destFolderPath)) {
+      // 拖回原文件夹：视为 no-op，避免误触发自动重命名
+      return;
+    }
 
-	    if (source.kind === "folder") {
-	      const fromPath = sourceFolderNames;
-	      const isDescendant = destFolderPath.length >= fromPath.length
+    if (Number(destPackageId) === packageId && source.kind === "folder") {
+      const fromPath = sourceFolderNames;
+      const isDescendant = destFolderPath.length >= fromPath.length
         && fromPath.every((name, idx) => destFolderPath[idx] === name);
       if (isDescendant) {
         toast.error("不能将文件夹移动到自身或其子目录中。");
@@ -658,35 +664,62 @@ export default function MaterialPackageNavPanel({
     const toastId = `material-package-move:${packageId}:${source.kind}:${sourceName}`;
     toast.loading("正在移动…", { id: toastId });
     try {
-      const destSiblings = getFolderNodesAtPath(baseContent, destFolderPath);
+      const destSiblings = getFolderNodesAtPath(Number(destPackageId) === packageId ? baseSourceContent : baseDestContent, destFolderPath);
       const usedNames = destSiblings.map(n => n.name);
       const finalName = autoRenameVsCodeLike(sourceName, usedNames);
       if (finalName !== sourceName) {
         window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
       }
 
-      const nextContent = draftMoveNode(
-        baseContent,
-        { parentPath: sourceParentPath, source: { type: source.kind, name: sourceName }, nextName: finalName !== sourceName ? finalName : undefined },
-        { folderPath: destFolderPath },
-      );
-      await savePackageContent({ packageId, nextContent });
+      if (Number(destPackageId) !== packageId) {
+        const moved = draftMoveNodeAcrossContents(
+          { sourceContent: baseSourceContent, destContent: baseDestContent },
+          { parentPath: sourceParentPath, source: { type: source.kind, name: sourceName }, nextName: finalName !== sourceName ? finalName : undefined },
+          { folderPath: destFolderPath },
+        );
+        if (!moved.removed) {
+          toast.error("未找到可移动的节点。", { id: toastId });
+          return;
+        }
+
+        await savePackageContent({ packageId: destPackageId, nextContent: moved.nextDestContent });
+        try {
+          await savePackageContent({ packageId, nextContent: moved.nextSourceContent });
+        }
+        catch (error) {
+          try {
+            await savePackageContent({ packageId: destPackageId, nextContent: baseDestContent });
+          }
+          catch {
+            // ignore revert
+          }
+          throw error;
+        }
+      }
+      else {
+        const nextContent = draftMoveNode(
+          baseSourceContent,
+          { parentPath: sourceParentPath, source: { type: source.kind, name: sourceName }, nextName: finalName !== sourceName ? finalName : undefined },
+          { folderPath: destFolderPath },
+        );
+        await savePackageContent({ packageId, nextContent });
+      }
 
       const path = [
         ...destFolderPath.map(n => `folder:${n}`),
         source.kind === "folder" ? `folder:${finalName}` : `material:${finalName}`,
       ];
-      const payload = toPreviewPayload({ kind: source.kind, packageId, label: finalName, path });
-      const key = buildNodeKey({ packageId, path });
+      const payload = toPreviewPayload({ kind: source.kind, packageId: destPackageId, label: finalName, path });
+      const key = buildNodeKey({ packageId: destPackageId, path });
       setSelectedNode({ kind: source.kind, key, payload });
 
       const keysToExpand: string[] = [];
-      keysToExpand.push(`root:${packageId}`);
+      keysToExpand.push(`root:${destPackageId}`);
       for (let i = 0; i < path.length; i++) {
         const part = path[i];
         if (typeof part !== "string" || !part.startsWith("folder:"))
           continue;
-        keysToExpand.push(buildNodeKey({ packageId, path: path.slice(0, i + 1) }));
+        keysToExpand.push(buildNodeKey({ packageId: destPackageId, path: path.slice(0, i + 1) }));
       }
 
       setCollapsedByKey((prev) => {
@@ -737,17 +770,15 @@ export default function MaterialPackageNavPanel({
     const width = 320;
     const height = 188;
     const padding = 8;
+    const panelRect = scrollRef.current?.getBoundingClientRect() ?? null;
 
-    const preferBelowTop = rect.bottom + 6;
-    const preferAboveTop = rect.top - height - 6;
-    const top = preferBelowTop + height + padding <= window.innerHeight
-      ? preferBelowTop
-      : Math.max(padding, preferAboveTop);
-
-    const preferLeft = rect.right - width;
-    const left = Math.max(padding, Math.min(preferLeft, window.innerWidth - width - padding));
-
-    return { left, top: Math.max(padding, Math.min(top, window.innerHeight - height - padding)) };
+    return computeVisibilityPopoverPos({
+      anchorRect: rect,
+      panelRect,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      popover: { width, height },
+      padding,
+    });
   }, []);
 
   const openVisibilityEditor = useCallback((args: { packageId: number; anchor: HTMLButtonElement; current: 0 | 1 }) => {

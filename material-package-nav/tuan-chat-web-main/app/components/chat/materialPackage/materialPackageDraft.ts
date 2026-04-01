@@ -320,6 +320,55 @@ export function draftMoveNode(
   return updateContentAtPath(afterRemove, folderPath, nodes => [...nodes, normalizedNode]);
 }
 
+export function draftMoveNodeAcrossContents(
+  args: { sourceContent: MaterialPackageContent; destContent: MaterialPackageContent },
+  from: { parentPath: string[]; source: DraftNodeRef; nextName?: string },
+  dest: { folderPath: string[] },
+): { nextSourceContent: MaterialPackageContent; nextDestContent: MaterialPackageContent; removed: MaterialNode | null } {
+  const sourceContent = args?.sourceContent;
+  const destContent = args?.destContent;
+  if (!sourceContent || !destContent) {
+    return {
+      nextSourceContent: sourceContent,
+      nextDestContent: destContent,
+      removed: null,
+    } as any;
+  }
+
+  const parentPath = Array.isArray(from?.parentPath) ? from.parentPath : [];
+  const folderPath = Array.isArray(dest?.folderPath) ? dest.folderPath : [];
+
+  const root = Array.isArray(sourceContent.root) ? sourceContent.root : [];
+  const siblings = getNodesAtPathFromRoot(root, parentPath);
+  if (!siblings) {
+    return { nextSourceContent: sourceContent, nextDestContent: destContent, removed: null };
+  }
+
+  const fromName = from.source.name.trim();
+  if (!fromName) {
+    return { nextSourceContent: sourceContent, nextDestContent: destContent, removed: null };
+  }
+  const removed = siblings.find(n => n.type === from.source.type && n.name === fromName) as MaterialNode | undefined;
+  if (!removed) {
+    return { nextSourceContent: sourceContent, nextDestContent: destContent, removed: null };
+  }
+
+  const removedResult = removeNodeByRef(siblings, from.source);
+  if (!removedResult.removed) {
+    return { nextSourceContent: sourceContent, nextDestContent: destContent, removed: null };
+  }
+  const nextSourceContent = updateContentAtPath(sourceContent, parentPath, () => removedResult.nodes);
+
+  const nextName = typeof from.nextName === "string" ? from.nextName.trim() : "";
+  const normalizedNode: MaterialNode = nextName && nextName !== removedResult.removed.name
+    ? ({ ...removedResult.removed, name: nextName } as MaterialNode)
+    : removedResult.removed;
+
+  const nextDestContent = updateContentAtPath(destContent, folderPath, nodes => [...nodes, normalizedNode]);
+
+  return { nextSourceContent, nextDestContent, removed: normalizedNode };
+}
+
 export function buildEmptyMaterialPackageContent(): MaterialPackageContent {
   return {
     version: 1,

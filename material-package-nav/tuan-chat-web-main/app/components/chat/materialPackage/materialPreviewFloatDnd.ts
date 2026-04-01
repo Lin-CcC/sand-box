@@ -20,7 +20,13 @@ export function computeMpfDropIntent(args: {
       return "reorderBefore";
     if (localY >= rect.height - edgeY)
       return "reorderAfter";
-    return args.targetKind === "folder" ? "moveInto" : "none";
+
+    const localX = args.clientX - rect.left;
+    const intoHotX = Math.min(44, rect.width * 0.25);
+    if (args.targetKind === "folder" && localX <= intoHotX)
+      return "moveInto";
+
+    return localY < rect.height / 2 ? "reorderBefore" : "reorderAfter";
   }
 
   const localX = args.clientX - rect.left;
@@ -29,6 +35,7 @@ export function computeMpfDropIntent(args: {
     return "reorderBefore";
   if (localX >= rect.width - edgeX)
     return "reorderAfter";
-  return args.targetKind === "folder" ? "moveInto" : "none";
+  if (args.targetKind === "folder")
+    return "moveInto";
+  return localX < rect.width / 2 ? "reorderBefore" : "reorderAfter";
 }
-

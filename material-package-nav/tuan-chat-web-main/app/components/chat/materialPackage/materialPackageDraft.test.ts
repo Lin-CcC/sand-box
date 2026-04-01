@@ -8,6 +8,7 @@ import {
   draftDeleteFolder,
   draftDeleteMaterial,
   draftMoveNode,
+  draftMoveNodeAcrossContents,
   draftRenameFolder,
   draftRenameMaterial,
   draftReorderNode,
@@ -210,6 +211,66 @@ describe("materialPackageDraft", () => {
     expect(to.children).toHaveLength(1);
     expect(to.children[0]).toMatchObject({ type: "folder", name: "子" });
     expect(to.children[0].children?.[0]).toMatchObject({ type: "material", name: "M" });
+  });
+
+  it("支持跨素材箱移动文件夹（保留 children，按 nextName 重命名）", () => {
+    const source: MaterialPackageContent = {
+      version: 1,
+      root: [
+        { type: "folder", name: "父", children: [{ type: "folder", name: "子", children: [{ type: "material", name: "M", note: "", messages: [] }] }] },
+      ],
+    };
+    const dest: MaterialPackageContent = {
+      version: 1,
+      root: [
+        { type: "folder", name: "子", children: [] },
+        { type: "folder", name: "目标", children: [] },
+      ],
+    };
+
+    const moved = draftMoveNodeAcrossContents(
+      { sourceContent: source, destContent: dest },
+      { parentPath: ["父"], source: { type: "folder", name: "子" }, nextName: "子(1)" },
+      { folderPath: ["目标"] },
+    );
+
+    const nextSource = moved.nextSourceContent;
+    const nextDest = moved.nextDestContent;
+
+    const from = nextSource.root.find(n => n.type === "folder" && n.name === "父") as any;
+    const to = nextDest.root.find(n => n.type === "folder" && n.name === "目标") as any;
+    expect(from.children.map((n: any) => n.name)).toEqual([]);
+    expect(to.children).toHaveLength(1);
+    expect(to.children[0]).toMatchObject({ type: "folder", name: "子(1)" });
+    expect(to.children[0].children?.[0]).toMatchObject({ type: "material", name: "M" });
+  });
+
+  it("支持跨素材箱移动素材（保留 messages/note）", () => {
+    const source: MaterialPackageContent = {
+      version: 1,
+      root: [
+        { type: "folder", name: "A", children: [{ type: "material", name: "m.png", note: "n", messages: [{ messageType: 2, extra: { imageMessage: { url: "u" } } }] }] },
+      ],
+    };
+    const dest: MaterialPackageContent = {
+      version: 1,
+      root: [
+        { type: "folder", name: "B", children: [] },
+      ],
+    };
+
+    const moved = draftMoveNodeAcrossContents(
+      { sourceContent: source, destContent: dest },
+      { parentPath: ["A"], source: { type: "material", name: "m.png" } },
+      { folderPath: ["B"] },
+    );
+
+    const from = (moved.nextSourceContent.root[0] as any).children;
+    const to = (moved.nextDestContent.root[0] as any).children;
+    expect(from).toHaveLength(0);
+    expect(to).toHaveLength(1);
+    expect(to[0]).toMatchObject({ type: "material", name: "m.png", note: "n" });
+    expect(to[0].messages?.[0]?.extra?.imageMessage?.url).toBe("u");
   });
 });
 
