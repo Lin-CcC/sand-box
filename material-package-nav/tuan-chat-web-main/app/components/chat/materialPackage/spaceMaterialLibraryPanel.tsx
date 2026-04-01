@@ -11,11 +11,12 @@ import PortalTooltip from "@/components/common/portalTooltip";
 import { buildEmptyMaterialPackageContent } from "@/components/chat/materialPackage/materialPackageDraft";
 import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
 import { getMaterialPreviewDragData, getMaterialPreviewDragOrigin, isMaterialPreviewDrag, setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
+import { setMaterialBatchDragData } from "@/components/chat/materialPackage/materialPackageDndBatch";
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import type { MaterialFolderNode, MaterialNode } from "@/components/materialPackage/materialPackageApi";
-import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial } from "@/components/chat/materialPackage/materialPackageDraft";
+import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReorderNode } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
 import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
@@ -610,9 +611,11 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const treeItemsRef = useRef<HTMLDivElement | null>(null);
   const [moveDropTargetKey, setMoveDropTargetKey] = useState<string | null>(null);
+  const [reorderDropTargetKey, setReorderDropTargetKey] = useState<string | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
+  const [selectedMaterialKeys, setSelectedMaterialKeys] = useState<Set<string>>(() => new Set());
   const [myImportKeyword, setMyImportKeyword] = useState("");
   const [selectedMyPackageId, setSelectedMyPackageId] = useState<number | null>(null);
   const [isMyImporting, setIsMyImporting] = useState(false);
@@ -649,6 +652,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     setPreviewHintPos(hintPosition);
     setActivePreviewInitialSize(options?.initialSize ?? null);
   }, []);
+
+  const clearMaterialSelection = useCallback(() => {
+    setSelectedMaterialKeys(prev => (prev.size ? new Set() : prev));
+  }, []);
+
+  useEffect(() => {
+    clearMaterialSelection();
+  }, [clearMaterialSelection, expandedId, spaceId, useBackend]);
 
   const dockPreview = useCallback((payload: MaterialPreviewPayload, options?: { index?: number; placement?: "top" | "bottom" }) => {
     setDockedPreview(payload);
@@ -895,6 +906,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     return next;
   }, [baseVisibleItems, dockedPreview, resolvedDockIndex]);
 
+  const selectedMaterialPayloadsInOrder = useMemo(() => {
+    if (!selectedMaterialKeys.size)
+      return [];
+    return baseVisibleItems
+      .filter(item => item.kind === "material" && selectedMaterialKeys.has(item.key))
+      .map(item => item.payload);
+  }, [baseVisibleItems, selectedMaterialKeys]);
+
   const clearDockHint = useCallback(() => {
     setDockHint(null);
     setDockLineTop(null);
@@ -1058,6 +1077,60 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     await queryClient.invalidateQueries({ queryKey: buildListQueryKey(spaceId, useBackend) });
     await queryClient.invalidateQueries({ queryKey: buildDetailQueryKey(spacePackageId, useBackend) });
   }, [queryClient, spaceId, useBackend]);
+
+  const reorderNode = useCallback(async (args: {
+    source: SpaceMaterialMovePayload;
+    dest: { packageId: number; folderPath: string[]; insertBefore: { type: "folder" | "material"; name: string } };
+  }) => {
+    if (!canEdit) {
+      toast.error("当前无权限修改局内素材库。");
+      return;
+    }
+    const { source, dest } = args;
+    if (!isValidId(source.packageId) || !isValidId(dest.packageId))
+      return;
+    if (Number(source.spaceId) !== Number(spaceId))
+      return;
+    if (Number(source.packageId) !== Number(dest.packageId)) {
+      toast.error("当前仅支持同一素材箱内排序。");
+      return;
+    }
+
+    const sourceFolderNames = payloadPathToFolderNames(source.path);
+    const sourceMaterialToken = source.path[source.path.length - 1] ?? "";
+    const sourceName = source.kind === "material"
+      ? tokenToName(String(sourceMaterialToken), "material:")
+      : sourceFolderNames[sourceFolderNames.length - 1] ?? "";
+    if (!sourceName)
+      return;
+
+    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+    const destParentPath = dest.folderPath;
+    const sameParent = sourceParentPath.length === destParentPath.length
+      && sourceParentPath.every((name, idx) => destParentPath[idx] === name);
+    if (!sameParent) {
+      toast.error("仅支持同一文件夹内排序。");
+      return;
+    }
+
+    const toastId = `space-material-reorder:${source.packageId}:${source.kind}:${sourceName}`;
+    toast.loading("正在调整顺序…", { id: toastId });
+    try {
+      const content = await loadPackageContent(source.packageId);
+      const next = draftReorderNode(
+        content,
+        destParentPath,
+        { type: source.kind, name: sourceName },
+        { insertBefore: { type: dest.insertBefore.type, name: dest.insertBefore.name } },
+      );
+      await savePackageContent(source.packageId, next);
+      toast.success("已调整顺序", { id: toastId });
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "排序失败";
+      toast.error(message, { id: toastId });
+    }
+  }, [canEdit, loadPackageContent, savePackageContent, spaceId]);
 
   const moveNode = useCallback(async (args: {
     source: SpaceMaterialMovePayload;
@@ -1689,6 +1762,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const spacePackageId = Number(item.payload.packageId);
       const isEditingName = inlineRename?.key === item.key;
       const isMoveDropTarget = moveDropTargetKey === item.key;
+      const isReorderDropTarget = reorderDropTargetKey === item.key;
       return (
         <div
           key={item.key}
@@ -1698,7 +1772,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
           data-node-key={item.key}
         >
           <div
-            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""}`}
+            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
             style={{ paddingLeft: 4 + item.depth }}
             draggable
             onDragStart={(e) => {
@@ -1720,16 +1794,37 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
               if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
                 return;
+
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const localY = e.clientY - rect.top;
+              const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
+              if (isBeforeZone && Number(movePayload.packageId) === Number(spacePackageId)) {
+                const sourceFolderNames = payloadPathToFolderNames(movePayload.path);
+                const sourceParentPath = movePayload.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+                const destParentPath = item.folderPath.slice(0, -1);
+                const sameParent = sourceParentPath.length === destParentPath.length
+                  && sourceParentPath.every((name, idx) => destParentPath[idx] === name);
+                if (sameParent) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = "move";
+                  setReorderDropTargetKey(item.key);
+                  setMoveDropTargetKey(null);
+                  return;
+                }
+              }
               e.preventDefault();
               e.stopPropagation();
               e.dataTransfer.dropEffect = "move";
               setMoveDropTargetKey(item.key);
+              setReorderDropTargetKey(null);
             }}
             onDragLeave={(e) => {
               const related = e.relatedTarget as HTMLElement | null;
               if (related && (e.currentTarget as HTMLElement).contains(related))
                 return;
               setMoveDropTargetKey(prev => (prev === item.key ? null : prev));
+              setReorderDropTargetKey(prev => (prev === item.key ? null : prev));
             }}
             onDrop={(e) => {
               if (!canEdit)
@@ -1737,17 +1832,36 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
               if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
                 return;
+
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const localY = e.clientY - rect.top;
+              const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
+              if (isBeforeZone && Number(movePayload.packageId) === Number(spacePackageId)) {
+                e.preventDefault();
+                e.stopPropagation();
+                setReorderDropTargetKey(null);
+                setMoveDropTargetKey(null);
+                void reorderNode({
+                  source: movePayload,
+                  dest: { packageId: spacePackageId, folderPath: item.folderPath.slice(0, -1), insertBefore: { type: "folder", name: item.name } },
+                });
+                return;
+              }
+
               e.preventDefault();
               e.stopPropagation();
               setMoveDropTargetKey(null);
+              setReorderDropTargetKey(null);
               void moveNode({ source: movePayload, dest: { packageId: spacePackageId, folderPath: item.folderPath } });
             }}
             onDragEnd={() => {
               activeSpaceMaterialMoveDrag = null;
               setMoveDropTargetKey(null);
+              setReorderDropTargetKey(null);
             }}
             onClick={() => {
               setSelectedNode({ kind: "folder", key: item.key, packageId: spacePackageId });
+              clearMaterialSelection();
             }}
             onDoubleClick={(e) => {
               const target = e.target as HTMLElement | null;
@@ -1830,6 +1944,8 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }
 
     const isSelected = selectedNode?.key === item.key;
+    const isMultiSelected = selectedMaterialKeys.has(item.key);
+    const isReorderDropTarget = reorderDropTargetKey === item.key;
     const spacePackageId = Number(item.payload.packageId);
     const isEditingName = inlineRename?.key === item.key;
     return (
@@ -1841,13 +1957,18 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         data-node-key={item.key}
       >
         <div
-          className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+          className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${isSelected || isMultiSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
           style={{ paddingLeft: 22 + item.depth }}
           draggable
           onDragStart={(e) => {
-            e.dataTransfer.effectAllowed = canEdit ? "copyMove" : "copy";
+            const isMultiDrag = selectedMaterialPayloadsInOrder.length > 1 && selectedMaterialKeys.has(item.key);
+            e.dataTransfer.effectAllowed = isMultiDrag ? "copy" : (canEdit ? "copyMove" : "copy");
             setMaterialPreviewDragData(e.dataTransfer, item.payload);
             setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+            if (isMultiDrag) {
+              setMaterialBatchDragData(e.dataTransfer, { items: selectedMaterialPayloadsInOrder });
+              return;
+            }
             if (canEdit) {
               setSpaceMaterialMoveDragData(e.dataTransfer, {
                 spaceId,
@@ -1857,12 +1978,89 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               });
             }
           }}
+          onDragOver={(e) => {
+            if (!canEdit)
+              return;
+            const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+            if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+              return;
+
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const localY = e.clientY - rect.top;
+            const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
+            if (!isBeforeZone)
+              return;
+            if (Number(movePayload.packageId) !== Number(spacePackageId))
+              return;
+
+            const sourceFolderNames = payloadPathToFolderNames(movePayload.path);
+            const sourceParentPath = movePayload.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+            const destParentPath = item.folderPath;
+            const sameParent = sourceParentPath.length === destParentPath.length
+              && sourceParentPath.every((name, idx) => destParentPath[idx] === name);
+            if (!sameParent)
+              return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "move";
+            setReorderDropTargetKey(item.key);
+            setMoveDropTargetKey(null);
+          }}
+          onDragLeave={(e) => {
+            const related = e.relatedTarget as HTMLElement | null;
+            if (related && (e.currentTarget as HTMLElement).contains(related))
+              return;
+            setReorderDropTargetKey(prev => (prev === item.key ? null : prev));
+          }}
+          onDrop={(e) => {
+            if (!canEdit)
+              return;
+            const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
+            if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
+              return;
+
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const localY = e.clientY - rect.top;
+            const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
+            if (!isBeforeZone)
+              return;
+            if (Number(movePayload.packageId) !== Number(spacePackageId))
+              return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            setReorderDropTargetKey(null);
+            setMoveDropTargetKey(null);
+            void reorderNode({
+              source: movePayload,
+              dest: { packageId: spacePackageId, folderPath: item.folderPath, insertBefore: { type: "material", name: item.name } },
+            });
+          }}
           onDragEnd={() => {
             activeSpaceMaterialMoveDrag = null;
             setMoveDropTargetKey(null);
+            setReorderDropTargetKey(null);
           }}
-          onClick={() => {
+          onClick={(e) => {
             setSelectedNode({ kind: "material", key: item.key, packageId: spacePackageId });
+            if (e.metaKey || e.ctrlKey) {
+              setSelectedMaterialKeys((prev) => {
+                const next = new Set(prev);
+                if (next.has(item.key)) {
+                  next.delete(item.key);
+                }
+                else {
+                  next.add(item.key);
+                }
+                return next.size === prev.size ? prev : next;
+              });
+              return;
+            }
+            setSelectedMaterialKeys((prev) => {
+              const onlyThis = prev.size === 1 && prev.has(item.key);
+              return onlyThis ? prev : new Set([item.key]);
+            });
           }}
           onDoubleClick={(e) => {
             const target = e.target as HTMLElement | null;
@@ -1926,7 +2124,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         </div>
       </div>
     );
-  }, [canEdit, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, selectedNode?.key, setExpandedId, setMoveDropTargetKey, spaceId, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
+  }, [canEdit, clearMaterialSelection, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, reorderDropTargetKey, reorderNode, selectedMaterialKeys, selectedMaterialPayloadsInOrder, selectedNode?.key, setExpandedId, setMoveDropTargetKey, setReorderDropTargetKey, spaceId, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
 
   return (
     <div
