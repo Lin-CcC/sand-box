@@ -139,24 +139,6 @@ function normalizePackages(payload: unknown): MaterialPackageRecord[] {
   return payload.filter(Boolean) as MaterialPackageRecord[];
 }
 
-function parseUpdateTimeMs(value: string | null | undefined) {
-  const ms = Date.parse(String(value ?? ""));
-  return Number.isFinite(ms) ? ms : -Infinity;
-}
-
-function buildSortedPackageIdOrder(packages: MaterialPackageRecord[]) {
-  const indexed = packages.map((pkg, index) => ({ pkg, index }));
-  indexed.sort((a, b) => {
-    const timeDiff =
-      parseUpdateTimeMs(b.pkg.updateTime) - parseUpdateTimeMs(a.pkg.updateTime);
-    if (timeDiff !== 0) return timeDiff;
-    const idDiff = Number(b.pkg.packageId) - Number(a.pkg.packageId);
-    if (idDiff !== 0) return idDiff;
-    return a.index - b.index;
-  });
-  return indexed.map(({ pkg }) => Number(pkg.packageId));
-}
-
 function reconcilePackageOrder(
   prevOrder: number[],
   nextPackages: MaterialPackageRecord[],
@@ -168,8 +150,8 @@ function reconcilePackageOrder(
   const keptSet = new Set(kept);
   const added = nextPackages.filter((p) => !keptSet.has(Number(p.packageId)));
 
-  const addedIds = buildSortedPackageIdOrder(added);
-  return [...addedIds, ...kept];
+  const addedIds = added.map((p) => Number(p.packageId));
+  return [...kept, ...addedIds];
 }
 
 function clampInt(value: number, min: number, max: number) {
@@ -366,9 +348,6 @@ export default function MaterialPackageNavPanel({
     [packagesQuery.data],
   );
   const [packageOrder, setPackageOrder] = useState<number[] | null>(null);
-  const [shouldResortPackages, setShouldResortPackages] =
-    useState<boolean>(true);
-  const prevDrawerOpenRef = useRef<boolean | undefined>(isLeftDrawerOpen);
   const suppressPackageClickUntilMsRef = useRef<number>(0);
   const [packageReorderDrop, setPackageReorderDrop] = useState<{
     key: string;
@@ -377,36 +356,25 @@ export default function MaterialPackageNavPanel({
   const packageReorderDragRef = useRef<{ sourceId: number } | null>(null);
 
   useEffect(() => {
-    const prev = prevDrawerOpenRef.current;
-    prevDrawerOpenRef.current = isLeftDrawerOpen;
-    if (prev === false && isLeftDrawerOpen === true) {
-      setShouldResortPackages(true);
-    }
-  }, [isLeftDrawerOpen]);
-
-  useEffect(() => {
     if (!rawPackages.length) {
       setPackageOrder(null);
-      setShouldResortPackages(false);
       return;
     }
 
     setPackageOrder((prev) => {
       const basePrev = prev?.length
         ? prev
-        : Array.isArray(storedPackageOrder)
+        : Array.isArray(storedPackageOrder) && storedPackageOrder.length
           ? storedPackageOrder
-          : [];
-      if (shouldResortPackages || !basePrev?.length) {
-        return buildSortedPackageIdOrder(rawPackages);
+          : null;
+
+      if (!basePrev) {
+        return null;
       }
+
       return reconcilePackageOrder(basePrev, rawPackages);
     });
-
-    if (shouldResortPackages) {
-      setShouldResortPackages(false);
-    }
-  }, [rawPackages, shouldResortPackages, storedPackageOrder]);
+  }, [rawPackages, storedPackageOrder]);
 
   useEffect(() => {
     if (!packageOrder?.length) {
@@ -2085,7 +2053,6 @@ export default function MaterialPackageNavPanel({
   ]);
 
   const handleToolbarRefresh = useCallback(() => {
-    setShouldResortPackages(true);
     packagesQuery.refetch();
   }, [packagesQuery]);
 

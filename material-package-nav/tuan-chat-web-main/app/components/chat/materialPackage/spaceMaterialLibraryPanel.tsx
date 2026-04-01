@@ -876,7 +876,26 @@ export function SpaceMaterialLibraryCategory({
   >(`tc:space-material-library:folder-collapsed:${spaceId}`, {});
   const isCollapsed = Boolean(collapsedBySpace[String(spaceId)]);
   const toolbarPinned = Boolean(toolbarPinnedBySpace[String(spaceId)]);
-  const dockContextId = useMemo(() => `space-material:${spaceId}`, [spaceId]);
+  // IMPORTANT: this panel can be mounted multiple times (e.g. multiple rooms under the same space).
+  // Use an instance-unique dock context id to avoid global window event / DOM selector cross-talk.
+  const dockInstanceId = useMemo(() => {
+    try {
+      // Prefer stable random UUID when available.
+      if (
+        typeof crypto !== "undefined" &&
+        typeof (crypto as any).randomUUID === "function"
+      ) {
+        return String((crypto as any).randomUUID());
+      }
+    } catch {
+      // ignore
+    }
+    return `r${Math.random().toString(36).slice(2, 10)}`;
+  }, []);
+  const dockContextId = useMemo(
+    () => `space-material:${spaceId}:${dockInstanceId}`,
+    [dockInstanceId, spaceId],
+  );
   const toggleCollapsed = useCallback(() => {
     setCollapsedBySpace((prev) => ({
       ...prev,
