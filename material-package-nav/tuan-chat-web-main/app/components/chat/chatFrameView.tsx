@@ -3,7 +3,6 @@ import React from "react";
 
 import ChatFrameList from "@/components/chat/chatFrameList";
 import ChatFrameOverlays from "@/components/chat/chatFrameOverlays";
-import MaterialSendTray from "@/components/chat/materialPackage/materialSendTray";
 import ChatFrameContextMenu from "@/components/chat/room/contextMenu/chatFrameContextMenu";
 
 interface ChatFrameViewProps {
@@ -17,7 +16,6 @@ export default function ChatFrameView({ listProps, overlaysProps, contextMenuPro
     <div className="h-full relative">
       <ChatFrameList {...listProps} />
       <ChatFrameOverlays {...overlaysProps} />
-      <MaterialSendTray />
       {/* 右键菜单 */}
       <ChatFrameContextMenu {...contextMenuProps} />
     </div>

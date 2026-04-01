@@ -22,7 +22,7 @@ import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { findMockPackageById } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { nowIso, readSpaceMockPackages, writeSpaceMockPackages } from "@/components/chat/materialPackage/spaceMaterialMockStore";
-import { ArrowClockwise, CrosshairSimple, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, DownloadSimple, FileArrowUp, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
   createSpaceMaterialPackage,
   deleteSpaceMaterialPackage,
@@ -41,6 +41,49 @@ type SpaceMaterialLibraryPanelProps = {
 
 function isValidId(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function shallowArrayEqual(a: unknown, b: unknown) {
+  if (!Array.isArray(a) || !Array.isArray(b))
+    return false;
+  if (a.length !== b.length)
+    return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i])
+      return false;
+  }
+  return true;
+}
+
+function parseUpdateTimeMs(value: string | null | undefined) {
+  const ms = Date.parse(String(value ?? ""));
+  return Number.isFinite(ms) ? ms : -Infinity;
+}
+
+function buildSortedSpacePackageIdOrder(packages: SpaceMaterialPackageRecord[]) {
+  const indexed = packages.map((pkg, index) => ({ pkg, index }));
+  indexed.sort((a, b) => {
+    const timeDiff = parseUpdateTimeMs(b.pkg.updateTime) - parseUpdateTimeMs(a.pkg.updateTime);
+    if (timeDiff !== 0)
+      return timeDiff;
+    const idDiff = Number(b.pkg.spacePackageId) - Number(a.pkg.spacePackageId);
+    if (idDiff !== 0)
+      return idDiff;
+    return a.index - b.index;
+  });
+  return indexed.map(({ pkg }) => Number(pkg.spacePackageId));
+}
+
+function reconcileSpacePackageOrder(prevOrder: number[], nextPackages: SpaceMaterialPackageRecord[]) {
+  const nextIds = nextPackages.map(p => Number(p.spacePackageId));
+  const nextIdSet = new Set(nextIds);
+
+  const kept = prevOrder.filter(id => nextIdSet.has(id));
+  const keptSet = new Set(kept);
+  const added = nextPackages.filter(p => !keptSet.has(Number(p.spacePackageId)));
+
+  const addedIds = buildSortedSpacePackageIdOrder(added);
+  return [...addedIds, ...kept];
 }
 
 function buildListQueryKey(spaceId: number, useBackend: boolean) {
@@ -69,6 +112,14 @@ function makeFolderToken(name: string) {
 
 function makeMaterialToken(name: string) {
   return `material:${name}`;
+}
+
+function parseRootKeySpacePackageId(key: string) {
+  const prefix = "root:";
+  if (typeof key !== "string" || !key.startsWith(prefix))
+    return null;
+  const id = Number(key.slice(prefix.length));
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
 const SPACE_MATERIAL_MOVE_TYPE = "application/x-tc-space-material-move";
@@ -596,7 +647,92 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     refetchOnWindowFocus: false,
   });
 
-  const packages = useMemo(() => Array.isArray(listQuery.data) ? listQuery.data : [], [listQuery.data]);
+  const rawPackages = useMemo(() => Array.isArray(listQuery.data) ? listQuery.data : [], [listQuery.data]);
+  const [storedSpacePackageOrder, setStoredSpacePackageOrder] = useLocalStorage<number[]>(`tc:space-material-library:package-order:${spaceId}`, []);
+  const [spacePackageOrder, setSpacePackageOrder] = useState<number[] | null>(null);
+  const suppressPackageClickUntilMsRef = useRef<number>(0);
+  const spacePackageReorderDropRef = useRef<{ key: string; placement: "before" | "after" } | null>(null);
+  const [spacePackageReorderDrop, setSpacePackageReorderDrop] = useState<{ key: string; placement: "before" | "after" } | null>(null);
+  const spacePackageReorderDragRef = useRef<{ sourceId: number } | null>(null);
+
+  useEffect(() => {
+    if (!rawPackages.length) {
+      setSpacePackageOrder(null);
+      if (storedSpacePackageOrder?.length) {
+        setStoredSpacePackageOrder([]);
+      }
+      return;
+    }
+
+    setSpacePackageOrder((prev) => {
+      const basePrev = prev?.length
+        ? prev
+        : (Array.isArray(storedSpacePackageOrder) ? storedSpacePackageOrder : []);
+      if (!basePrev?.length) {
+        return buildSortedSpacePackageIdOrder(rawPackages);
+      }
+      return reconcileSpacePackageOrder(basePrev, rawPackages);
+    });
+  }, [rawPackages, setStoredSpacePackageOrder, storedSpacePackageOrder]);
+
+  useEffect(() => {
+    if (!spacePackageOrder?.length)
+      return;
+    setStoredSpacePackageOrder(prev => (shallowArrayEqual(prev, spacePackageOrder) ? prev : spacePackageOrder));
+  }, [setStoredSpacePackageOrder, spacePackageOrder]);
+
+  const packages = useMemo(() => {
+    if (!spacePackageOrder?.length)
+      return rawPackages;
+    const byId = new Map<number, SpaceMaterialPackageRecord>();
+    rawPackages.forEach((pkg) => {
+      byId.set(Number(pkg.spacePackageId), pkg);
+    });
+    const ordered: SpaceMaterialPackageRecord[] = [];
+    spacePackageOrder.forEach((id) => {
+      const pkg = byId.get(id);
+      if (pkg)
+        ordered.push(pkg);
+    });
+    if (ordered.length === rawPackages.length)
+      return ordered;
+    const orderedSet = new Set(ordered.map(p => Number(p.spacePackageId)));
+    rawPackages.forEach((pkg) => {
+      const id = Number(pkg.spacePackageId);
+      if (!orderedSet.has(id))
+        ordered.push(pkg);
+    });
+    return ordered;
+  }, [rawPackages, spacePackageOrder]);
+
+  const reorderSpacePackageOrder = useCallback((args: { sourceId: number; targetId: number; placement: "before" | "after" }) => {
+    const sourceId = Number(args.sourceId);
+    const targetId = Number(args.targetId);
+    const placement = args.placement === "after" ? "after" : "before";
+    if (!Number.isFinite(sourceId) || !Number.isFinite(targetId))
+      return;
+    if (sourceId <= 0 || targetId <= 0)
+      return;
+    if (sourceId === targetId)
+      return;
+
+    setSpacePackageOrder((prev) => {
+      const base = Array.isArray(prev) && prev.length
+        ? [...prev]
+        : packages.map(p => Number(p.spacePackageId));
+      const fromIndex = base.indexOf(sourceId);
+      const targetIndex = base.indexOf(targetId);
+      if (fromIndex < 0 || targetIndex < 0)
+        return prev;
+      base.splice(fromIndex, 1);
+      const nextTargetIndex = base.indexOf(targetId);
+      if (nextTargetIndex < 0)
+        return prev;
+      const insertIndex = placement === "before" ? nextTargetIndex : nextTargetIndex + 1;
+      base.splice(Math.max(0, Math.min(base.length, insertIndex)), 0, sourceId);
+      return base;
+    });
+  }, [packages]);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isImportFromMyOpen, setIsImportFromMyOpen] = useState(false);
@@ -616,6 +752,8 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
   const [selectedNode, setSelectedNode] = useState<{ kind: "package" | "folder" | "material"; key: string; packageId: number } | null>(null);
   const [selectedMaterialKeys, setSelectedMaterialKeys] = useState<Set<string>>(() => new Set());
+  const localImportInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingLocalImportTarget, setPendingLocalImportTarget] = useState<{ packageId: number; folderPath: string[] } | null>(null);
   const [myImportKeyword, setMyImportKeyword] = useState("");
   const [selectedMyPackageId, setSelectedMyPackageId] = useState<number | null>(null);
   const [isMyImporting, setIsMyImporting] = useState(false);
@@ -1550,14 +1688,162 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     setIsDeleteConfirmOpen(true);
   }, [selectedNode]);
 
-  const handleToolbarReveal = useCallback(() => {
-    if (!selectedNode?.key)
-      return;
-    setExpandedId(selectedNode.packageId);
-    setTimeout(() => {
-      document.querySelector(`[data-node-key="${selectedNode.key}"]`)?.scrollIntoView({ block: "nearest" });
-    }, 0);
+  const getSelectedFolderPath = useCallback(() => {
+    if (!selectedNode)
+      return [] as string[];
+    if (selectedNode.kind === "package")
+      return [] as string[];
+
+    const marker = `:${selectedNode.packageId}:`;
+    const idx = selectedNode.key.indexOf(marker);
+    if (idx < 0)
+      return [] as string[];
+    const rest = selectedNode.key.slice(idx + marker.length);
+    const tokens = rest ? rest.split("/").filter(Boolean) : [];
+    return payloadPathToFolderNames(tokens);
   }, [selectedNode]);
+
+  const buildMessagesFromFile = useCallback(async (file: File) => {
+    const type = String(file.type ?? "").toLowerCase();
+    const ext = String(file.name ?? "").toLowerCase();
+
+    const isImage = type.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(ext);
+    const isAudio = type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac|flac)$/.test(ext);
+    const isText = type.startsWith("text/") || /\.(txt|md|json|yaml|yml|csv|log)$/.test(ext);
+
+    if (isImage) {
+      return [{
+        messageType: 2,
+        annotations: ["图片"],
+        extra: { imageMessage: { url: useBackend ? "" : URL.createObjectURL(file), fileName: file.name } },
+      }];
+    }
+
+    if (isAudio) {
+      return [{
+        messageType: 3,
+        annotations: ["音频"],
+        extra: { soundMessage: { url: useBackend ? "" : URL.createObjectURL(file), fileName: file.name } },
+      }];
+    }
+
+    if (isText) {
+      const text = await file.text().catch(() => "");
+      return [{
+        messageType: 1,
+        content: text,
+        annotations: ["文本"],
+        extra: {},
+      }];
+    }
+
+    return [{
+      messageType: 1,
+      content: file.name,
+      annotations: ["文件"],
+      extra: {},
+    }];
+  }, [useBackend]);
+
+  const applyLocalImportFiles = useCallback(async (args: { target: { packageId: number; folderPath: string[] }; files: File[] }) => {
+    if (!canEdit) {
+      toast.error("当前无权限修改局内素材库。");
+      return;
+    }
+
+    const baseContent = await loadPackageContent(args.target.packageId);
+    const nodes = getFolderNodesAtPath(baseContent, args.target.folderPath);
+    const existingNames = new Set(nodes.map(n => String(n.name ?? "")));
+    const folderNames = new Set(nodes.filter(n => n.type === "folder").map(n => String(n.name ?? "")));
+
+    let nextContent = baseContent;
+    let lastKey: string | null = null;
+    let importedCount = 0;
+
+    for (const file of args.files) {
+      const baseName = String(file.name ?? "").trim();
+      if (!baseName)
+        continue;
+
+      let finalName = baseName;
+      if (existingNames.has(finalName) || folderNames.has(finalName)) {
+        finalName = autoRenameVsCodeLike(finalName, existingNames);
+      }
+      existingNames.add(finalName);
+
+      const messages = await buildMessagesFromFile(file);
+      const material: MaterialItemNode = { type: "material", name: finalName, note: "", messages };
+      nextContent = draftCreateMaterial(nextContent, args.target.folderPath, material);
+
+      const tokens = [...args.target.folderPath.map(makeFolderToken), makeMaterialToken(finalName)];
+      lastKey = `material:${args.target.packageId}:${tokens.join("/")}`;
+      importedCount += 1;
+    }
+
+    if (!importedCount) {
+      toast("没有可导入的文件。", { icon: "ℹ️" });
+      return;
+    }
+
+    await savePackageContent(args.target.packageId, nextContent);
+    setExpandedId(args.target.packageId);
+    setPendingLocalImportTarget(null);
+
+    if (lastKey) {
+      setSelectedNode({ kind: "material", key: lastKey, packageId: args.target.packageId });
+      setTimeout(() => {
+        document.querySelector(`[data-node-key="${lastKey}"]`)?.scrollIntoView({ block: "nearest" });
+      }, 0);
+    }
+
+    toast.success(`已导入 ${importedCount} 个素材`);
+  }, [buildMessagesFromFile, canEdit, loadPackageContent, savePackageContent]);
+
+  const handleToolbarLocalImport = useCallback(() => {
+    if (!canEdit) {
+      toast.error("当前无权限修改局内素材库。");
+      return;
+    }
+
+    const fallbackPackageId = packages.length ? Number(packages[0]?.spacePackageId ?? -1) : null;
+    const targetPackageId = isValidId(activePackageId) ? activePackageId : (isValidId(fallbackPackageId) ? fallbackPackageId : null);
+    if (!isValidId(targetPackageId)) {
+      window.alert("请先新建或导入一个局内素材箱。");
+      return;
+    }
+
+    const folderPath = selectedNode && Number(selectedNode.packageId) === Number(targetPackageId) ? getSelectedFolderPath() : [];
+    setPendingLocalImportTarget({ packageId: targetPackageId, folderPath });
+
+    const el = localImportInputRef.current;
+    if (!el)
+      return;
+    el.value = "";
+    el.click();
+  }, [activePackageId, canEdit, getSelectedFolderPath, packages, selectedNode]);
+
+  const handleLocalImportChange = useCallback(async () => {
+    const el = localImportInputRef.current;
+    if (!el)
+      return;
+    const files = Array.from(el.files || []);
+    if (!files.length)
+      return;
+
+    const target = pendingLocalImportTarget ?? ((): { packageId: number; folderPath: string[] } | null => {
+      const targetPackageId = activePackageId;
+      if (!isValidId(targetPackageId))
+        return null;
+      return { packageId: targetPackageId, folderPath: getSelectedFolderPath() };
+    })();
+
+    if (!target) {
+      window.alert("请先展开或选中一个局内素材箱。");
+      return;
+    }
+
+    await applyLocalImportFiles({ target, files });
+  }, [activePackageId, applyLocalImportFiles, getSelectedFolderPath, pendingLocalImportTarget]);
 
   const handleDelete = useCallback(async () => {
     const id = pendingDeleteId;
@@ -1621,25 +1907,53 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const spacePackageId = Number(item.payload.packageId);
       const isEditingName = inlineRename?.key === item.key;
       const isMoveDropTarget = moveDropTargetKey === item.key;
+      const isReorderDropTarget = spacePackageReorderDrop?.key === item.key;
+      const reorderPlacement = spacePackageReorderDrop?.key === item.key ? spacePackageReorderDrop.placement : null;
       return (
         <div
-          key={item.key}
+          key={`${item.key}:${item.baseIndex}`}
           className="px-1 rounded-md"
           data-role="material-package-visible-row"
           data-base-index={item.baseIndex}
           data-node-key={item.key}
         >
           <div
-            className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""}`}
+            className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = "copy";
-              setMaterialPreviewDragData(e.dataTransfer, item.payload);
-              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+              suppressPackageClickUntilMsRef.current = Date.now() + 500;
+              // 默认：拖拽用于“素材箱排序”，避免误触发“拖拽打开预览”
+              // 按住 Alt：允许作为预览拖拽（与“我的素材包”一致）
+              if (!canEdit || e.altKey) {
+                spacePackageReorderDragRef.current = null;
+                e.dataTransfer.effectAllowed = "copy";
+                setMaterialPreviewDragData(e.dataTransfer, item.payload);
+                setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+                return;
+              }
+
+              spacePackageReorderDragRef.current = { sourceId: spacePackageId };
+              e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
               if (!canEdit)
                 return;
+
+              const sourceId = Number(spacePackageReorderDragRef.current?.sourceId ?? -1);
+              if (Number.isFinite(sourceId) && sourceId > 0 && sourceId !== spacePackageId && !getSpaceMaterialMoveDragData(e.dataTransfer)) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                const localY = e.clientY - rect.top;
+                const placement: "before" | "after" = localY <= rect.height / 2 ? "before" : "after";
+                const next = { key: item.key, placement } as const;
+                spacePackageReorderDropRef.current = next;
+                setSpacePackageReorderDrop(next);
+                setMoveDropTargetKey(null);
+                return;
+              }
+
               const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
               if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
                 return;
@@ -1652,11 +1966,26 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               const related = e.relatedTarget as HTMLElement | null;
               if (related && (e.currentTarget as HTMLElement).contains(related))
                 return;
+              setSpacePackageReorderDrop(prev => (prev?.key === item.key ? null : prev));
               setMoveDropTargetKey(prev => (prev === item.key ? null : prev));
             }}
             onDrop={(e) => {
               if (!canEdit)
                 return;
+
+              const sourceId = Number(spacePackageReorderDragRef.current?.sourceId ?? -1);
+              if (Number.isFinite(sourceId) && sourceId > 0 && sourceId !== spacePackageId && !getSpaceMaterialMoveDragData(e.dataTransfer)) {
+                e.preventDefault();
+                e.stopPropagation();
+                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                const localY = e.clientY - rect.top;
+                const placement: "before" | "after" = localY <= rect.height / 2 ? "before" : "after";
+                spacePackageReorderDropRef.current = null;
+                setSpacePackageReorderDrop(null);
+                reorderSpacePackageOrder({ sourceId, targetId: spacePackageId, placement });
+                return;
+              }
+
               const movePayload = getSpaceMaterialMoveDragData(e.dataTransfer);
               if (!movePayload || Number(movePayload.spaceId) !== Number(spaceId))
                 return;
@@ -1665,8 +1994,25 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               setMoveDropTargetKey(null);
               void moveNode({ source: movePayload, dest: { packageId: spacePackageId, folderPath: [] } });
             }}
-            onDragEnd={() => setMoveDropTargetKey(null)}
+            onDragEnd={() => {
+              const sourceId = Number(spacePackageReorderDragRef.current?.sourceId ?? -1);
+              const drop = spacePackageReorderDropRef.current;
+              const targetId = drop ? parseRootKeySpacePackageId(drop.key) : null;
+              const placement = drop?.placement ?? "before";
+
+              spacePackageReorderDragRef.current = null;
+              spacePackageReorderDropRef.current = null;
+              setSpacePackageReorderDrop(null);
+              setMoveDropTargetKey(null);
+
+              if (Number.isFinite(sourceId) && sourceId > 0 && targetId && sourceId !== targetId) {
+                reorderSpacePackageOrder({ sourceId, targetId, placement });
+              }
+            }}
             onClick={() => {
+              if (Date.now() < suppressPackageClickUntilMsRef.current) {
+                return;
+              }
               setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
               setExpandedId(item.isExpanded ? null : spacePackageId);
             }}
@@ -1765,7 +2111,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       const isReorderDropTarget = reorderDropTargetKey === item.key;
       return (
         <div
-          key={item.key}
+          key={`${item.key}:${item.baseIndex}`}
           className="px-1 rounded-md"
           data-role="material-package-visible-row"
           data-base-index={item.baseIndex}
@@ -1950,7 +2296,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     const isEditingName = inlineRename?.key === item.key;
     return (
       <div
-        key={item.key}
+        key={`${item.key}:${item.baseIndex}`}
         className="px-1 rounded-md"
         data-role="material-package-visible-row"
         data-base-index={item.baseIndex}
@@ -2124,7 +2470,7 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         </div>
       </div>
     );
-  }, [canEdit, clearMaterialSelection, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, reorderDropTargetKey, reorderNode, selectedMaterialKeys, selectedMaterialPayloadsInOrder, selectedNode?.key, setExpandedId, setMoveDropTargetKey, setReorderDropTargetKey, spaceId, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
+  }, [canEdit, clearMaterialSelection, closeInlineRename, commitInlineRename, dockContextId, dockPreview, draftInlineRename, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, inlineRenameInputRef, inlineRenameMeasureRef, inlineRenameWidthPx, moveDropTargetKey, moveNode, openPreview, packageBottomInsertIndex, reorderDropTargetKey, reorderNode, reorderSpacePackageOrder, selectedMaterialKeys, selectedMaterialPayloadsInOrder, selectedNode?.key, setExpandedId, setMoveDropTargetKey, setReorderDropTargetKey, setSpacePackageReorderDrop, spaceId, spacePackageReorderDrop?.key, spacePackageReorderDrop?.placement, startInlineRename, toggleFolderCollapsed, treeItemsRef, undockPreview]);
 
   return (
     <div
@@ -2185,6 +2531,15 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 
         {canEdit && (
           <div className="flex items-center gap-1">
+            <input
+              ref={localImportInputRef}
+              type="file"
+              multiple
+              onChange={handleLocalImportChange}
+              style={{ position: "fixed", left: -9999, top: -9999, width: 1, height: 1, opacity: 0 }}
+              aria-hidden="true"
+              tabIndex={-1}
+            />
             <div
               className="flex items-center gap-1 group/ops"
               onClick={(e) => {
@@ -2267,15 +2622,15 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                     <TrashIcon className="size-4" />
                   </button>
                 </PortalTooltip>
-                <PortalTooltip label={selectedNode ? "展开到选中项" : "先选择一个节点"} placement="bottom">
+                <PortalTooltip label={baseItemCount > 0 ? "本地导入素材" : "暂无局内素材箱"} placement="bottom">
                   <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    disabled={!selectedNode}
-                    onClick={handleToolbarReveal}
-                    aria-label="展开到选中项"
+                    disabled={baseItemCount === 0}
+                    onClick={handleToolbarLocalImport}
+                    aria-label="本地导入素材"
                   >
-                    <CrosshairSimple className="size-4" />
+                    <FileArrowUp className="size-4" />
                   </button>
                 </PortalTooltip>
               </div>

@@ -1946,13 +1946,14 @@ export default function MaterialPreviewFloat({
                 gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(96, thumbSize)}px, 1fr))`,
               }}
             >
-              {sortedNodes.map((node) => {
+              {sortedNodes.map((node, nodeIndex) => {
                 const isFolder = node.type === "folder";
                 const name = node.name;
                 const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
                 const hintText = isFolder ? "文件夹" : (node.note?.trim() ? node.note : "素材");
                 const subtitle = isFolder ? `文件夹 · ${(node.children?.length ?? 0)}项` : hintText;
                 const key = `${node.type}:${name}`;
+                const reactKey = `${node.type}:${folderPath.join("/")}:${name}:${nodeIndex}`;
                 const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
                 const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                 const annotations = isFolder ? [] : getMaterialAnnotations(node);
@@ -1961,7 +1962,7 @@ export default function MaterialPreviewFloat({
 
                 return (
                   <div
-                    key={`${node.type}:${name}`}
+                    key={reactKey}
                     className={`border transition-colors overflow-hidden cursor-pointer ${
                       isSelected
                         ? "border-[color:var(--tc-mpf-accent)] bg-[color:var(--tc-mpf-surface-2)]"
@@ -2183,11 +2184,12 @@ export default function MaterialPreviewFloat({
                 <div className="text-right opacity-90">类型</div>
               </div>
               <div>
-                {sortedNodes.map((node) => {
+                {sortedNodes.map((node, nodeIndex) => {
                   const isFolder = node.type === "folder";
                   const name = node.name;
                   const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
                   const key = `${node.type}:${name}`;
+                  const reactKey = `${node.type}:${folderPath.join("/")}:${name}:${nodeIndex}`;
                   const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
                   const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                   const annotations = isFolder ? [] : getMaterialAnnotations(node);
@@ -2197,7 +2199,7 @@ export default function MaterialPreviewFloat({
                   const folderCountText = isFolder ? `${node.children?.length ?? 0} 项` : "";
                   return (
                     <div
-                      key={`${node.type}:${name}`}
+                      key={reactKey}
                       className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 text-xs border-t border-[color:var(--tc-mpf-border)] cursor-pointer ${
                         isSelected ? "bg-[color:var(--tc-mpf-selected)]" : "hover:bg-[color:var(--tc-mpf-surface-3)]"
                       }`}

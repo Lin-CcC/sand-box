@@ -2,6 +2,7 @@ import type { ChatMessageRequest } from "../../../../api/models/ChatMessageReque
 
 import React, { use, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import { CaretLeft, CaretRight } from "@phosphor-icons/react";
 
 import { getMaterialPreviewDragData, isMaterialPreviewDrag } from "@/components/chat/materialPackage/materialPackageDnd";
 import { materialMessagesToChatRequests, resolveMaterialMessagesFromPayload } from "@/components/chat/materialPackage/materialPackageSendUtils";
@@ -53,7 +54,7 @@ export default function MaterialSendTray() {
 
   const isOpen = useMaterialSendTrayStore(s => s.isOpen);
   const items = useMaterialSendTrayStore(s => s.items);
-  const toggle = useMaterialSendTrayStore(s => s.toggle);
+  const open = useMaterialSendTrayStore(s => s.open);
   const close = useMaterialSendTrayStore(s => s.close);
   const enqueue = useMaterialSendTrayStore(s => s.enqueue);
   const remove = useMaterialSendTrayStore(s => s.remove);
@@ -61,10 +62,35 @@ export default function MaterialSendTray() {
 
   const [isSending, setIsSending] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [isPinnedOpen, setIsPinnedOpen] = useState(false);
+
+  const closeTimerRef = useRef<number | null>(null);
+  const cancelScheduledClose = () => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+  const scheduleClose = () => {
+    if (isPinnedOpen)
+      return;
+    cancelScheduledClose();
+    closeTimerRef.current = window.setTimeout(() => {
+      close();
+      closeTimerRef.current = null;
+    }, 120);
+  };
+  const openByHover = () => {
+    cancelScheduledClose();
+    open();
+  };
+
+  useEffect(() => {
+    return () => cancelScheduledClose();
+  }, []);
 
   const hasValidTargetRoom = targetRoomId > 0;
   const canSend = hasValidTargetRoom && items.length > 0 && !isSending;
-  const isCompact = !isOpen && items.length === 0;
 
   useEffect(() => {
     if (roomId > 0 && (!targetRoomId || targetRoomId <= 0)) {
@@ -179,137 +205,162 @@ export default function MaterialSendTray() {
   };
 
   return (
-    <div className="absolute bottom-3 right-3 z-[70] pointer-events-none">
-      <div
-        className={`pointer-events-auto select-none rounded-xl border border-base-300 bg-base-100/95 backdrop-blur shadow-lg ${isCompact ? "w-[180px]" : "w-[320px]"} ${isDragActive ? "ring-2 ring-info/40" : ""}`}
-        onDragEnter={(e) => {
-          if (!isMaterialPreviewDrag(e.dataTransfer))
-            return;
-          e.preventDefault();
-          e.stopPropagation();
-          setIsDragActive(true);
-        }}
-        onDragOver={(e) => {
-          if (!isMaterialPreviewDrag(e.dataTransfer))
-            return;
-          e.preventDefault();
-          e.stopPropagation();
-          e.dataTransfer.dropEffect = "copy";
-          setIsDragActive(true);
-        }}
-        onDragLeave={() => {
-          setIsDragActive(false);
-        }}
-        onDrop={(e) => {
-          if (!isMaterialPreviewDrag(e.dataTransfer))
-            return;
-          e.preventDefault();
-          e.stopPropagation();
-          setIsDragActive(false);
-          const payload = getMaterialPreviewDragData(e.dataTransfer);
-          if (!payload)
-            return;
-          enqueue(payload);
-          toast.success("已加入素材队列");
-        }}
-      >
-        <div className="flex items-center justify-between gap-2 px-3 py-2">
-          <button
-            type="button"
-            className="btn btn-ghost btn-xs px-2"
-            onClick={toggle}
-            aria-label="切换素材队列展开"
-          >
-            <span className="font-semibold">素材队列</span>
-            <span className="ml-1 text-[11px] opacity-60">{summary}</span>
-          </button>
-          <div className="flex items-center gap-1">
-            {!isCompact && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-xs"
-                  onClick={() => { clear(); }}
-                  disabled={isSending || items.length === 0}
-                >
-                  清空
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-xs"
-                  onClick={handleSend}
-                  disabled={!canSend}
-                >
-                  {isSending ? "发送中…" : "发送"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-xs"
-                  onClick={close}
-                  aria-label="收起素材队列"
-                >
-                  ×
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+    <div className="absolute top-1/2 right-0 -translate-y-1/2 z-[80] pointer-events-none">
+      <div className="relative pointer-events-auto select-none">
+        <button
+          type="button"
+          className={`absolute right-[-10px] top-1/2 -translate-y-1/2 h-12 w-6 rounded-l-xl border border-base-300 bg-base-100/90 backdrop-blur shadow-md flex items-center justify-center hover:bg-base-100 active:bg-base-100 ${isDragActive ? "ring-2 ring-info/40" : ""}`}
+          onMouseEnter={() => openByHover()}
+          onMouseLeave={() => scheduleClose()}
+          onFocus={() => openByHover()}
+          onBlur={() => scheduleClose()}
+          onClick={() => {
+            cancelScheduledClose();
+            if (isOpen && isPinnedOpen) {
+              setIsPinnedOpen(false);
+              close();
+              return;
+            }
+            setIsPinnedOpen(true);
+            open();
+          }}
+          aria-label="打开素材队列"
+          aria-expanded={isOpen}
+        >
+          {isOpen ? <CaretLeft className="size-4 opacity-70" /> : <CaretRight className="size-4 opacity-70" />}
+        </button>
 
         {isOpen && (
-          <div className="px-2 pb-2">
-            {items.length === 0 && (
-              <div className="px-2 py-2 text-xs text-base-content/60">
-                拖素材到这里加入队列，然后点“发送”。
+          <div
+            className="absolute left-full top-1/2 -translate-y-1/2 pl-3 pointer-events-auto"
+            onMouseEnter={() => cancelScheduledClose()}
+            onMouseLeave={() => scheduleClose()}
+          >
+            <div
+              className={`w-[320px] rounded-xl border border-base-300 bg-base-100/95 backdrop-blur shadow-xl ${isDragActive ? "ring-2 ring-info/40" : ""}`}
+              onDragEnter={(e) => {
+                if (!isMaterialPreviewDrag(e.dataTransfer))
+                  return;
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(true);
+              }}
+              onDragOver={(e) => {
+                if (!isMaterialPreviewDrag(e.dataTransfer))
+                  return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "copy";
+                setIsDragActive(true);
+              }}
+              onDragLeave={() => {
+                setIsDragActive(false);
+              }}
+              onDrop={(e) => {
+                if (!isMaterialPreviewDrag(e.dataTransfer))
+                  return;
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragActive(false);
+                const payload = getMaterialPreviewDragData(e.dataTransfer);
+                if (!payload)
+                  return;
+                enqueue(payload);
+                toast.success("已加入素材队列");
+              }}
+            >
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <div className="min-w-0">
+                  <div className="font-semibold text-sm">素材队列</div>
+                  <div className="text-[11px] opacity-60">{summary}</div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => { clear(); }}
+                    disabled={isSending || items.length === 0}
+                  >
+                    清空
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-xs"
+                    onClick={handleSend}
+                    disabled={!canSend}
+                  >
+                    {isSending ? "发送中…" : "发送"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => {
+                      setIsPinnedOpen(false);
+                      close();
+                    }}
+                    aria-label="关闭素材队列"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
-            )}
-            {items.length > 0 && (
-              <div className="max-h-[220px] overflow-y-auto">
-                {items.map((item, idx) => (
-                  <div key={item.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-base-200/50">
-                    <div className="min-w-0 text-xs">
-                      <span className="opacity-60 mr-2">{idx + 1}.</span>
-                      <span className="truncate">{item.payload.label}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-xs"
-                      onClick={() => remove(item.id)}
-                      disabled={isSending}
-                      aria-label="移除队列项"
-                    >
-                      ×
-                    </button>
+
+              <div className="px-2 pb-2">
+                {items.length === 0 && (
+                  <div className="px-2 py-2 text-xs text-base-content/60">
+                    拖素材到这里加入队列，然后点“发送”。
                   </div>
-                ))}
-              </div>
-            )}
-            <div className="mt-2 px-2">
-              <div className="flex items-center gap-2">
-                <div className="text-[11px] text-base-content/60 shrink-0">目标房间</div>
-                <select
-                  className="select select-bordered select-xs w-full"
-                  value={hasValidTargetRoom ? String(targetRoomId) : ""}
-                  disabled={isSending || availableRooms.length === 0}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (Number.isFinite(next) && next > 0)
-                      setTargetRoomId(next);
-                  }}
-                  aria-label="选择目标房间"
-                >
-                  {availableRooms.length === 0 && (
-                    <option value="">暂无可用房间</option>
-                  )}
-                  {availableRooms.map((r) => {
-                    const rid = Number(r.roomId);
-                    const label = String(r.name ?? `房间 #${rid}`);
-                    return (
-                      <option key={rid} value={String(rid)}>
-                        {label}
-                      </option>
-                    );
-                  })}
-                </select>
+                )}
+                {items.length > 0 && (
+                  <div className="max-h-[220px] overflow-y-auto">
+                    {items.map((item, idx) => (
+                      <div key={item.id} className="flex items-center justify-between gap-2 px-2 py-1 rounded hover:bg-base-200/50">
+                        <div className="min-w-0 text-xs">
+                          <span className="opacity-60 mr-2">{idx + 1}.</span>
+                          <span className="truncate">{item.payload.label}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => remove(item.id)}
+                          disabled={isSending}
+                          aria-label="移除队列项"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-2 px-2">
+                  <div className="flex items-center gap-2">
+                    <div className="text-[11px] text-base-content/60 shrink-0">目标房间</div>
+                    <select
+                      className="select select-bordered select-xs w-full"
+                      value={hasValidTargetRoom ? String(targetRoomId) : ""}
+                      disabled={isSending || availableRooms.length === 0}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        if (Number.isFinite(next) && next > 0)
+                          setTargetRoomId(next);
+                      }}
+                      aria-label="选择目标房间"
+                    >
+                      {availableRooms.length === 0 && (
+                        <option value="">暂无可用房间</option>
+                      )}
+                      {availableRooms.map((r) => {
+                        const rid = Number(r.roomId);
+                        const label = String(r.name ?? `房间 #${rid}`);
+                        return (
+                          <option key={rid} value={String(rid)}>
+                            {label}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

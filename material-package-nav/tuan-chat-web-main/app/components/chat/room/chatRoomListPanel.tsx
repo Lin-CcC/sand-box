@@ -17,6 +17,7 @@ import useRoomSidebarTreeActions from "@/components/chat/room/useRoomSidebarTree
 import useRoomSidebarTreeState from "@/components/chat/room/useRoomSidebarTreeState";
 import SpaceHeaderBar from "@/components/chat/space/spaceHeaderBar";
 import { SpaceMaterialLibraryCategory } from "@/components/chat/materialPackage/spaceMaterialLibraryPanel";
+import MaterialSendTray from "@/components/chat/materialPackage/materialSendTray";
 import { useDocHeaderOverrideStore } from "@/components/chat/stores/docHeaderOverrideStore";
 import LeftChatList from "@/components/privateChat/LeftChatList";
 import { collectExistingDocIds, collectExistingRoomIds } from "./sidebarTree";
@@ -267,7 +268,7 @@ export default function ChatRoomListPanel({
 
   return (
     <div
-      className="flex flex-col gap-2 w-full h-full flex-1 bg-base-200 min-h-0 min-w-0 rounded-tl-xl border-l border-t border-gray-300 dark:border-gray-700"
+      className="relative flex flex-col gap-2 w-full h-full flex-1 bg-base-200 min-h-0 min-w-0 rounded-tl-xl border-l border-t border-gray-300 dark:border-gray-700"
     >
       {isPrivateChatMode
         ? (
@@ -398,6 +399,8 @@ export default function ChatRoomListPanel({
               />
             </>
           )}
+
+      <MaterialSendTray />
     </div>
   );
 }

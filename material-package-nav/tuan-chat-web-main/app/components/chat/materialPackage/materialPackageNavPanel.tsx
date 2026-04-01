@@ -116,6 +116,18 @@ function clampInt(value: number, min: number, max: number) {
 
 type ToolbarAction = "new-file" | "new-folder" | "new-package" | "import";
 
+function shallowArrayEqual(a: unknown, b: unknown) {
+  if (!Array.isArray(a) || !Array.isArray(b))
+    return false;
+  if (a.length !== b.length)
+    return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i])
+      return false;
+  }
+  return true;
+}
+
 type PendingDeleteDialog =
   | {
     kind: "package";
@@ -162,7 +174,7 @@ const MATERIAL_PACKAGE_REORDER_TYPE = "application/x-tc-material-package-reorder
 
 type MaterialPackageReorderPayload = {
   packageId: number;
-  kind: "folder" | "material";
+  kind: "package" | "folder" | "material";
   path: string[];
 };
 
@@ -192,13 +204,13 @@ function getMaterialPackageReorderDragData(dataTransfer: DataTransfer | null): M
     const parsed = JSON.parse(raw) as Partial<MaterialPackageReorderPayload> | null;
     if (!parsed || typeof parsed !== "object")
       return null;
-    if (parsed.kind !== "folder" && parsed.kind !== "material")
+    if (parsed.kind !== "package" && parsed.kind !== "folder" && parsed.kind !== "material")
       return null;
     const packageId = Number(parsed.packageId);
     if (!Number.isFinite(packageId) || packageId <= 0)
       return null;
     const path = Array.isArray(parsed.path) ? parsed.path.filter(s => typeof s === "string") : [];
-    if (!path.length)
+    if (parsed.kind !== "package" && !path.length)
       return null;
     return { packageId, kind: parsed.kind, path };
   };
@@ -237,6 +249,14 @@ function isMaterialPackageReorderDrag(dataTransfer: DataTransfer | null) {
   return Boolean(getMaterialPackageReorderDragData(dataTransfer));
 }
 
+function parseRootKeyPackageId(key: string) {
+  const prefix = "root:";
+  if (typeof key !== "string" || !key.startsWith(prefix))
+    return null;
+  const id = Number(key.slice(prefix.length));
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
 export default function MaterialPackageNavPanel({
   onCloseLeftDrawer,
   onToggleLeftDrawer,
@@ -252,6 +272,7 @@ export default function MaterialPackageNavPanel({
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend, setUseBackend] = useLocalStorage<boolean>("tc:material-package:use-backend", defaultUseBackend);
   const [toolbarPinned, setToolbarPinned] = useLocalStorage<boolean>("tc:material-package:toolbar-pinned", false);
+  const [storedPackageOrder, setStoredPackageOrder] = useLocalStorage<number[]>("tc:material-package:package-order", []);
   const queryClient = useQueryClient();
   const listQueryKey = buildMaterialPackageMyQueryKey(useBackend);
   const squareQueryKey = buildMaterialPackageSquareQueryKey(useBackend);
@@ -268,6 +289,9 @@ export default function MaterialPackageNavPanel({
   const [packageOrder, setPackageOrder] = useState<number[] | null>(null);
   const [shouldResortPackages, setShouldResortPackages] = useState<boolean>(true);
   const prevDrawerOpenRef = useRef<boolean | undefined>(isLeftDrawerOpen);
+  const suppressPackageClickUntilMsRef = useRef<number>(0);
+  const [packageReorderDrop, setPackageReorderDrop] = useState<{ key: string; placement: "before" | "after" } | null>(null);
+  const packageReorderDragRef = useRef<{ sourceId: number } | null>(null);
 
   useEffect(() => {
     const prev = prevDrawerOpenRef.current;
@@ -285,16 +309,29 @@ export default function MaterialPackageNavPanel({
     }
 
     setPackageOrder((prev) => {
-      if (shouldResortPackages || !prev?.length) {
+      const basePrev = prev?.length
+        ? prev
+        : (Array.isArray(storedPackageOrder) ? storedPackageOrder : []);
+      if (shouldResortPackages || !basePrev?.length) {
         return buildSortedPackageIdOrder(rawPackages);
       }
-      return reconcilePackageOrder(prev, rawPackages);
+      return reconcilePackageOrder(basePrev, rawPackages);
     });
 
     if (shouldResortPackages) {
       setShouldResortPackages(false);
     }
-  }, [rawPackages, shouldResortPackages]);
+  }, [rawPackages, shouldResortPackages, storedPackageOrder]);
+
+  useEffect(() => {
+    if (!packageOrder?.length) {
+      if (storedPackageOrder?.length) {
+        setStoredPackageOrder([]);
+      }
+      return;
+    }
+    setStoredPackageOrder(prev => (shallowArrayEqual(prev, packageOrder) ? prev : packageOrder));
+  }, [packageOrder, setStoredPackageOrder, storedPackageOrder?.length]);
 
   const packages = useMemo(() => {
     if (!packageOrder?.length)
@@ -324,6 +361,38 @@ export default function MaterialPackageNavPanel({
 
     return ordered;
   }, [packageOrder, rawPackages]);
+
+  const reorderPackageOrder = useCallback((args: { sourceId: number; targetId: number; placement: "before" | "after" }) => {
+    const sourceId = Number(args.sourceId);
+    const targetId = Number(args.targetId);
+    const placement = args.placement === "after" ? "after" : "before";
+    if (!Number.isFinite(sourceId) || !Number.isFinite(targetId))
+      return;
+    if (sourceId <= 0 || targetId <= 0)
+      return;
+    if (sourceId === targetId)
+      return;
+
+    setPackageOrder((prev) => {
+      const base = Array.isArray(prev) && prev.length
+        ? [...prev]
+        : packages.map(p => Number(p.packageId));
+      const fromIndex = base.indexOf(sourceId);
+      const targetIndex = base.indexOf(targetId);
+      if (fromIndex < 0 || targetIndex < 0)
+        return prev;
+      base.splice(fromIndex, 1);
+      const nextTargetIndex = base.indexOf(targetId);
+      if (nextTargetIndex < 0)
+        return prev;
+
+      const insertIndex = placement === "before"
+        ? nextTargetIndex
+        : nextTargetIndex + 1;
+      base.splice(Math.max(0, Math.min(base.length, insertIndex)), 0, sourceId);
+      return base;
+    });
+  }, [packages]);
 
   const [selectedNode, setSelectedNode] = useState<SelectedExplorerNode>(null);
   const [defaultTargetPackageId, setDefaultTargetPackageId] = useState<number | null>(null);
@@ -487,6 +556,8 @@ export default function MaterialPackageNavPanel({
     dest: { packageId: number; folderPath: string[]; insertBefore: { type: "folder" | "material"; name: string } };
   }) => {
     const { source, dest } = args;
+    if (source.kind === "package")
+      return;
     const packageId = Number(source.packageId);
     if (!Number.isFinite(packageId) || packageId <= 0)
       return;
@@ -541,6 +612,8 @@ export default function MaterialPackageNavPanel({
     dest: { packageId: number; folderPath: string[] };
   }) => {
     const { source, dest } = args;
+    if (source.kind === "package")
+      return;
     const packageId = Number(source.packageId);
     if (!Number.isFinite(packageId) || packageId <= 0)
       return;
@@ -1756,6 +1829,8 @@ export default function MaterialPackageNavPanel({
 
     if (item.kind === "package") {
       const isSelected = selectedNode?.key === item.key;
+      const isReorderDropTarget = packageReorderDrop?.key === item.key;
+      const reorderPlacement = packageReorderDrop?.key === item.key ? packageReorderDrop.placement : null;
       const packageId = Number(item.payload.packageId);
       const pkg = findPackageById(packageId);
       const visibility = normalizePackageVisibility(pkg?.visibility);
@@ -1770,14 +1845,77 @@ export default function MaterialPackageNavPanel({
           data-base-index={item.baseIndex}
         >
           <div
-            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"}`}
+            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = "copy";
-              setMaterialPreviewDragData(e.dataTransfer, item.payload);
-              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+              suppressPackageClickUntilMsRef.current = Date.now() + 500;
+
+              if (e.altKey) {
+                packageReorderDragRef.current = null;
+                e.dataTransfer.effectAllowed = "copy";
+                setMaterialPreviewDragData(e.dataTransfer, item.payload);
+                setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+                return;
+              }
+
+              packageReorderDragRef.current = { sourceId: packageId };
+              e.dataTransfer.effectAllowed = "move";
+              setMaterialPackageReorderDragData(e.dataTransfer, {
+                packageId: Number(item.payload.packageId),
+                kind: "package",
+                path: [],
+              });
+            }}
+            onDragOver={(e) => {
+              const sourceId = Number(packageReorderDragRef.current?.sourceId ?? -1);
+              if (!Number.isFinite(sourceId) || sourceId <= 0)
+                return;
+              if (sourceId === packageId)
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = "move";
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const localY = e.clientY - rect.top;
+              const placement: "before" | "after" = localY <= rect.height / 2 ? "before" : "after";
+              setPackageReorderDrop({ key: item.key, placement });
+            }}
+            onDragLeave={(e) => {
+              const related = e.relatedTarget as HTMLElement | null;
+              if (related && (e.currentTarget as HTMLElement).contains(related))
+                return;
+              setPackageReorderDrop(prev => (prev?.key === item.key ? null : prev));
+            }}
+            onDrop={(e) => {
+              const sourceId = Number(packageReorderDragRef.current?.sourceId ?? -1);
+              if (!Number.isFinite(sourceId) || sourceId <= 0)
+                return;
+              if (sourceId === packageId)
+                return;
+              e.preventDefault();
+              e.stopPropagation();
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              const localY = e.clientY - rect.top;
+              const placement: "before" | "after" = localY <= rect.height / 2 ? "before" : "after";
+              setPackageReorderDrop(null);
+              reorderPackageOrder({ sourceId, targetId: packageId, placement });
+            }}
+            onDragEnd={() => {
+              const sourceId = Number(packageReorderDragRef.current?.sourceId ?? -1);
+              const targetId = packageReorderDrop ? parseRootKeyPackageId(packageReorderDrop.key) : null;
+              const placement = packageReorderDrop?.placement ?? "before";
+              packageReorderDragRef.current = null;
+              setPackageReorderDrop(null);
+              if (Number.isFinite(sourceId) && sourceId > 0 && targetId && sourceId !== targetId) {
+                reorderPackageOrder({ sourceId, targetId, placement });
+              }
             }}
             onClick={(e) => {
+              if (Date.now() < suppressPackageClickUntilMsRef.current) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
               setSelectedNode({ kind: "package", key: item.key, payload: item.payload });
               const target = e.target as HTMLElement | null;
               const action = target?.closest?.("[data-inline-rename='1']") ? "rename" : "open";
@@ -1849,7 +1987,7 @@ export default function MaterialPackageNavPanel({
                 </span>
               </div>
             )}
-            <PortalTooltip label={`拖拽到右侧打开预览：${item.label}`} placement="right">
+            <PortalTooltip label={`拖拽排序素材箱；Alt+拖拽到右侧打开预览：${item.label}`} placement="right">
               <span className="text-[11px] opacity-50 px-1">
                 {item.nodeCount ? `${item.nodeCount}项` : "空"}
               </span>
@@ -2191,7 +2329,7 @@ export default function MaterialPackageNavPanel({
         )}
       </div>
     );
-  }, [closeInlineRename, commitInlineRename, dockedPreview, findPackageById, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, maybeTriggerByDoubleClick, moveDropTargetKey, moveNode, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, reorderDropTargetKey, reorderNode, resolvedDockIndex, selectedNode?.key, setMoveDropTargetKey, setReorderDropTargetKey, startInlineRename, toggleCollapsed, visibilityEditor?.packageId]);
+  }, [closeInlineRename, commitInlineRename, dockedPreview, findPackageById, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, maybeTriggerByDoubleClick, moveDropTargetKey, moveNode, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, packageReorderDrop?.key, packageReorderDrop?.placement, reorderDropTargetKey, reorderNode, reorderPackageOrder, resolvedDockIndex, selectedNode?.key, setMoveDropTargetKey, setPackageReorderDrop, setReorderDropTargetKey, startInlineRename, toggleCollapsed, visibilityEditor?.packageId]);
 
   return (
     <div
