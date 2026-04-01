@@ -48,6 +48,8 @@ import type { MaterialPreviewDragOrigin } from "@/components/chat/materialPackag
 import { setMaterialPreviewDragData, setMaterialPreviewDragOrigin } from "@/components/chat/materialPackage/materialPackageDnd";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
+import { autoRenameVsCodeLike, folderPathEqual } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { computeMpfDropIntent } from "@/components/chat/materialPackage/materialPreviewFloatDnd";
 import {
   getFolderNodesAtPath,
   resolveInitialPreviewState,
@@ -58,8 +60,10 @@ import {
   draftCreateMaterial,
   draftDeleteFolder,
   draftDeleteMaterial,
+  draftMoveNode,
   draftRenameFolder,
   draftRenameMaterial,
+  draftReorderNode,
   draftUpdateMaterialAnnotations,
 } from "@/components/chat/materialPackage/materialPackageDraft";
 import { useMpfThemeVars } from "@/components/chat/materialPackage/mpfThemeVars";
@@ -178,6 +182,75 @@ function getMaterialUnuploadedHint(node: MaterialNode): string | null {
   }
 
   return null;
+}
+
+const MPF_NODE_DRAG_TYPE = "application/x-tc-mpf-node";
+type MpfNodeDragPayload = {
+  packageId: number;
+  folderPath: string[];
+  kind: "folder" | "material";
+  name: string;
+};
+
+let activeMpfNodeDrag: MpfNodeDragPayload | null = null;
+
+function setMpfNodeDragData(dataTransfer: DataTransfer, payload: MpfNodeDragPayload) {
+  activeMpfNodeDrag = payload;
+  try {
+    dataTransfer.setData(MPF_NODE_DRAG_TYPE, JSON.stringify(payload));
+  }
+  catch {
+    // ignore
+  }
+  try {
+    dataTransfer.setData("text/plain", `tc-mpf-node:${JSON.stringify(payload)}`);
+  }
+  catch {
+    // ignore
+  }
+}
+
+function getMpfNodeDragData(dataTransfer: DataTransfer | null): MpfNodeDragPayload | null {
+  if (!dataTransfer)
+    return activeMpfNodeDrag;
+  const parse = (raw: string) => {
+    const parsed = JSON.parse(raw) as Partial<MpfNodeDragPayload> | null;
+    if (!parsed || typeof parsed !== "object")
+      return null;
+    if (typeof parsed.packageId !== "number" || !Number.isFinite(parsed.packageId) || parsed.packageId <= 0)
+      return null;
+    const folderPath = Array.isArray(parsed.folderPath) ? parsed.folderPath.filter(s => typeof s === "string") : [];
+    if (parsed.kind !== "folder" && parsed.kind !== "material")
+      return null;
+    const name = typeof parsed.name === "string" ? parsed.name : "";
+    if (!name.trim())
+      return null;
+    return { packageId: parsed.packageId, folderPath, kind: parsed.kind, name: name.trim() } as MpfNodeDragPayload;
+  };
+  try {
+    const raw = dataTransfer.getData(MPF_NODE_DRAG_TYPE);
+    if (raw) {
+      const parsed = parse(raw);
+      if (parsed)
+        return parsed;
+    }
+  }
+  catch {
+    // ignore
+  }
+  try {
+    const raw = dataTransfer.getData("text/plain");
+    const prefix = "tc-mpf-node:";
+    if (raw && raw.startsWith(prefix)) {
+      const parsed = parse(raw.slice(prefix.length));
+      if (parsed)
+        return parsed;
+    }
+  }
+  catch {
+    // ignore
+  }
+  return activeMpfNodeDrag;
 }
 
 function getMaterialAnnotations(node: MaterialNode): string[] {
@@ -810,11 +883,7 @@ export default function MaterialPreviewFloat({
     });
   }, [currentNodes, keyword]);
 
-  const sortedNodes = useMemo(() => {
-    const folders = filteredNodes.filter(n => n.type === "folder");
-    const materials = filteredNodes.filter(n => n.type === "material");
-    return [...folders, ...materials];
-  }, [filteredNodes]);
+  const visibleNodes = filteredNodes;
 
   const pathText = useMemo(() => {
     const pkgName = materialPackage?.name ?? `素材包#${selectedPackageId}`;
@@ -823,7 +892,7 @@ export default function MaterialPreviewFloat({
     return `${pkgName} / ${folderPath.join(" / ")}`;
   }, [folderPath, materialPackage?.name, selectedPackageId]);
 
-  const totalCount = useMemo(() => sortedNodes.length, [sortedNodes.length]);
+  const totalCount = useMemo(() => visibleNodes.length, [visibleNodes.length]);
   const selectedCount = useMemo(() => (selectedItem ? 1 : 0), [selectedItem]);
 
   const compactList = useMemo(() => viewMode === "list" && shellSize.w <= 360, [shellSize.w, viewMode]);
@@ -831,9 +900,17 @@ export default function MaterialPreviewFloat({
   const selectedNode = useMemo(() => {
     if (!selectedItem)
       return null;
-    const found = sortedNodes.find(n => n.type === selectedItem.type && n.name === selectedItem.name) ?? null;
+    const found = visibleNodes.find(n => n.type === selectedItem.type && n.name === selectedItem.name) ?? null;
     return found;
-  }, [selectedItem, sortedNodes]);
+  }, [selectedItem, visibleNodes]);
+
+  const [mpfReorderDropTarget, setMpfReorderDropTarget] = useState<{ key: string; placement: "before" | "after" } | null>(null);
+  const [mpfMoveIntoDropTargetKey, setMpfMoveIntoDropTargetKey] = useState<string | null>(null);
+
+  const clearMpfDropTargets = useCallback(() => {
+    setMpfReorderDropTarget(null);
+    setMpfMoveIntoDropTargetKey(null);
+  }, []);
 
   const annoAnchorRef = useRef<HTMLElement | null>(null);
   const annoTipRef = useRef<HTMLDivElement | null>(null);
@@ -1020,6 +1097,65 @@ export default function MaterialPreviewFloat({
       throw new Error("素材包未加载完成");
     return content;
   }, [content, materialPackage]);
+
+  const applyPreviewNodeDrop = useCallback(async (args: {
+    source: MpfNodeDragPayload;
+    target: { kind: "folder" | "material"; name: string };
+    intent: "reorderBefore" | "reorderAfter" | "moveInto";
+  }) => {
+    const source = args.source;
+    const target = args.target;
+    const intent = args.intent;
+    if (Number(source.packageId) !== Number(selectedPackageId))
+      return;
+    if (!folderPathEqual(source.folderPath, folderPath))
+      return;
+
+    if (intent === "moveInto") {
+      if (target.kind !== "folder")
+        return;
+      if (source.kind === "folder" && source.name === target.name)
+        return;
+
+      const destFolderPath = [...folderPath, target.name];
+      const destNodes = getFolderNodesAtPath(ensureContent(), destFolderPath);
+      const usedNames = destNodes.map(n => n.name);
+      const nextName = usedNames.includes(source.name) ? autoRenameVsCodeLike(source.name, usedNames) : "";
+      const nextContent = draftMoveNode(
+        ensureContent(),
+        { parentPath: folderPath, source: { type: source.kind, name: source.name }, nextName: nextName || undefined },
+        { folderPath: destFolderPath },
+      );
+      setSelectedItem(null);
+      await saveContent(nextContent);
+      return;
+    }
+
+    if (source.kind === target.kind && source.name === target.name)
+      return;
+
+    const siblings = getFolderNodesAtPath(ensureContent(), folderPath);
+    const targetIndex = siblings.findIndex(n => n.type === target.kind && n.name === target.name);
+    if (targetIndex < 0)
+      return;
+
+    const insertBefore = intent === "reorderBefore"
+      ? { type: target.kind, name: target.name }
+      : (() => {
+          const next = siblings[targetIndex + 1] ?? null;
+          if (!next)
+            return null;
+          return { type: next.type, name: next.name };
+        })();
+
+    const nextContent = draftReorderNode(
+      ensureContent(),
+      folderPath,
+      { type: source.kind, name: source.name },
+      { insertBefore },
+    );
+    await saveContent(nextContent);
+  }, [ensureContent, folderPath, saveContent, selectedPackageId]);
 
   const getMaterialNoteByName = useCallback((materialName: string) => {
     const nodes = getFolderNodesAtPath(ensureContent(), folderPath);
@@ -1946,7 +2082,7 @@ export default function MaterialPreviewFloat({
                 gridTemplateColumns: `repeat(auto-fill, minmax(${Math.max(96, thumbSize)}px, 1fr))`,
               }}
             >
-              {sortedNodes.map((node, nodeIndex) => {
+              {visibleNodes.map((node, nodeIndex) => {
                 const isFolder = node.type === "folder";
                 const name = node.name;
                 const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
@@ -1954,6 +2090,9 @@ export default function MaterialPreviewFloat({
                 const subtitle = isFolder ? `文件夹 · ${(node.children?.length ?? 0)}项` : hintText;
                 const key = `${node.type}:${name}`;
                 const reactKey = `${node.type}:${folderPath.join("/")}:${name}:${nodeIndex}`;
+                const isReorderTarget = mpfReorderDropTarget?.key === key;
+                const reorderPlacement = isReorderTarget ? mpfReorderDropTarget?.placement : null;
+                const isMoveIntoTarget = mpfMoveIntoDropTargetKey === key;
                 const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
                 const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                 const annotations = isFolder ? [] : getMaterialAnnotations(node);
@@ -1963,11 +2102,109 @@ export default function MaterialPreviewFloat({
                 return (
                   <div
                     key={reactKey}
-                    className={`border transition-colors overflow-hidden cursor-pointer ${
+                    className={`relative border transition-colors overflow-hidden cursor-pointer ${
                       isSelected
                         ? "border-[color:var(--tc-mpf-accent)] bg-[color:var(--tc-mpf-surface-2)]"
                         : "border-[color:var(--tc-mpf-item-border)] bg-[color:var(--tc-mpf-surface)] hover:bg-[color:var(--tc-mpf-surface-3)]"
-                    }`}
+                    } ${isMoveIntoTarget ? "ring-1 ring-[color:var(--tc-mpf-accent)]" : ""}`}
+                    draggable
+                    onDragStart={(e) => {
+                      if (isInlineClickTarget(e.target)) {
+                        e.preventDefault();
+                        return;
+                      }
+                      activeMpfNodeDrag = null;
+                      e.dataTransfer.effectAllowed = "move";
+                      setMpfNodeDragData(e.dataTransfer, { packageId: selectedPackageId, folderPath: [...folderPath], kind: node.type, name });
+                      clearMpfDropTargets();
+                    }}
+                    onDragOver={(e) => {
+                      const source = getMpfNodeDragData(e.dataTransfer);
+                      if (!source)
+                        return;
+                      if (Number(source.packageId) !== Number(selectedPackageId))
+                        return;
+                      if (!folderPathEqual(source.folderPath, folderPath))
+                        return;
+
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      const intent = computeMpfDropIntent({
+                        viewMode: "icon",
+                        targetKind: node.type,
+                        targetRect: rect,
+                        clientX: e.clientX,
+                        clientY: e.clientY,
+                      });
+                      if (intent === "none") {
+                        if (mpfReorderDropTarget?.key === key || mpfMoveIntoDropTargetKey === key) {
+                          clearMpfDropTargets();
+                        }
+                        return;
+                      }
+                      if (intent === "moveInto") {
+                        if (node.type !== "folder")
+                          return;
+                        if (source.kind === "folder" && source.name === name)
+                          return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = "move";
+                        setMpfMoveIntoDropTargetKey(key);
+                        setMpfReorderDropTarget(null);
+                        return;
+                      }
+
+                      if (source.kind === node.type && source.name === name)
+                        return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.dataTransfer.dropEffect = "move";
+                      setMpfReorderDropTarget({ key, placement: intent === "reorderAfter" ? "after" : "before" });
+                      setMpfMoveIntoDropTargetKey(null);
+                    }}
+                    onDragLeave={(e) => {
+                      const related = e.relatedTarget as HTMLElement | null;
+                      if (related && (e.currentTarget as HTMLElement).contains(related))
+                        return;
+                      if (mpfReorderDropTarget?.key === key) {
+                        setMpfReorderDropTarget(null);
+                      }
+                      if (mpfMoveIntoDropTargetKey === key) {
+                        setMpfMoveIntoDropTargetKey(null);
+                      }
+                    }}
+                    onDrop={(e) => {
+                      const source = getMpfNodeDragData(e.dataTransfer);
+                      if (!source)
+                        return;
+                      if (Number(source.packageId) !== Number(selectedPackageId))
+                        return;
+                      if (!folderPathEqual(source.folderPath, folderPath))
+                        return;
+                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      const intent = computeMpfDropIntent({
+                        viewMode: "icon",
+                        targetKind: node.type,
+                        targetRect: rect,
+                        clientX: e.clientX,
+                        clientY: e.clientY,
+                      });
+                      if (intent === "none")
+                        return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      clearMpfDropTargets();
+                      activeMpfNodeDrag = null;
+                      void applyPreviewNodeDrop({
+                        source,
+                        target: { kind: node.type, name },
+                        intent,
+                      });
+                    }}
+                    onDragEnd={() => {
+                      clearMpfDropTargets();
+                      activeMpfNodeDrag = null;
+                    }}
                     onClick={(e) => {
                       e.preventDefault();
                       setSelectedItem({ type: node.type, name });
@@ -1987,6 +2224,12 @@ export default function MaterialPreviewFloat({
                       }
                     }}
                   >
+                    {isReorderTarget && reorderPlacement === "before" && (
+                      <div className="pointer-events-none absolute left-0 top-2 bottom-2 w-[2px] bg-[color:var(--tc-mpf-accent)] rounded" />
+                    )}
+                    {isReorderTarget && reorderPlacement === "after" && (
+                      <div className="pointer-events-none absolute right-0 top-2 bottom-2 w-[2px] bg-[color:var(--tc-mpf-accent)] rounded" />
+                    )}
                     <div
                       className="relative flex items-center justify-center overflow-hidden bg-gradient-to-b from-[color:var(--tc-mpf-surface-2)] to-[color:var(--tc-mpf-surface)] border-b border-[color:var(--tc-mpf-border)]"
                       style={{ height: `${Math.max(64, Math.round(thumbSize * 0.62))}px` }}
@@ -2184,12 +2427,15 @@ export default function MaterialPreviewFloat({
                 <div className="text-right opacity-90">类型</div>
               </div>
               <div>
-                {sortedNodes.map((node, nodeIndex) => {
+                {visibleNodes.map((node, nodeIndex) => {
                   const isFolder = node.type === "folder";
                   const name = node.name;
                   const isSelected = Boolean(selectedItem && selectedItem.type === node.type && selectedItem.name === name);
                   const key = `${node.type}:${name}`;
                   const reactKey = `${node.type}:${folderPath.join("/")}:${name}:${nodeIndex}`;
+                  const isReorderTarget = mpfReorderDropTarget?.key === key;
+                  const reorderPlacement = isReorderTarget ? mpfReorderDropTarget?.placement : null;
+                  const isMoveIntoTarget = mpfMoveIntoDropTargetKey === key;
                   const thumbUrl = isFolder ? null : getMaterialThumbUrl(node);
                   const unuploadedHint = useBackend && !isFolder ? getMaterialUnuploadedHint(node) : null;
                   const annotations = isFolder ? [] : getMaterialAnnotations(node);
@@ -2200,9 +2446,107 @@ export default function MaterialPreviewFloat({
                   return (
                     <div
                       key={reactKey}
-                      className={`grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 text-xs border-t border-[color:var(--tc-mpf-border)] cursor-pointer ${
+                      className={`relative grid ${compactList ? "grid-cols-[1fr_72px]" : "grid-cols-[minmax(260px,1fr)_minmax(120px,160px)_minmax(72px,96px)]"} gap-2 px-3 py-2 text-xs border-t border-[color:var(--tc-mpf-border)] cursor-pointer ${
                         isSelected ? "bg-[color:var(--tc-mpf-selected)]" : "hover:bg-[color:var(--tc-mpf-surface-3)]"
-                      }`}
+                      } ${isMoveIntoTarget ? "ring-1 ring-[color:var(--tc-mpf-accent)]" : ""}`}
+                      draggable
+                      onDragStart={(e) => {
+                        if (isInlineClickTarget(e.target)) {
+                          e.preventDefault();
+                          return;
+                        }
+                        activeMpfNodeDrag = null;
+                        e.dataTransfer.effectAllowed = "move";
+                        setMpfNodeDragData(e.dataTransfer, { packageId: selectedPackageId, folderPath: [...folderPath], kind: node.type, name });
+                        clearMpfDropTargets();
+                      }}
+                      onDragOver={(e) => {
+                        const source = getMpfNodeDragData(e.dataTransfer);
+                        if (!source)
+                          return;
+                        if (Number(source.packageId) !== Number(selectedPackageId))
+                          return;
+                        if (!folderPathEqual(source.folderPath, folderPath))
+                          return;
+
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const intent = computeMpfDropIntent({
+                          viewMode: "list",
+                          targetKind: node.type,
+                          targetRect: rect,
+                          clientX: e.clientX,
+                          clientY: e.clientY,
+                        });
+                        if (intent === "none") {
+                          if (mpfReorderDropTarget?.key === key || mpfMoveIntoDropTargetKey === key) {
+                            clearMpfDropTargets();
+                          }
+                          return;
+                        }
+                        if (intent === "moveInto") {
+                          if (node.type !== "folder")
+                            return;
+                          if (source.kind === "folder" && source.name === name)
+                            return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          e.dataTransfer.dropEffect = "move";
+                          setMpfMoveIntoDropTargetKey(key);
+                          setMpfReorderDropTarget(null);
+                          return;
+                        }
+
+                        if (source.kind === node.type && source.name === name)
+                          return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = "move";
+                        setMpfReorderDropTarget({ key, placement: intent === "reorderAfter" ? "after" : "before" });
+                        setMpfMoveIntoDropTargetKey(null);
+                      }}
+                      onDragLeave={(e) => {
+                        const related = e.relatedTarget as HTMLElement | null;
+                        if (related && (e.currentTarget as HTMLElement).contains(related))
+                          return;
+                        if (mpfReorderDropTarget?.key === key) {
+                          setMpfReorderDropTarget(null);
+                        }
+                        if (mpfMoveIntoDropTargetKey === key) {
+                          setMpfMoveIntoDropTargetKey(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        const source = getMpfNodeDragData(e.dataTransfer);
+                        if (!source)
+                          return;
+                        if (Number(source.packageId) !== Number(selectedPackageId))
+                          return;
+                        if (!folderPathEqual(source.folderPath, folderPath))
+                          return;
+                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        const intent = computeMpfDropIntent({
+                          viewMode: "list",
+                          targetKind: node.type,
+                          targetRect: rect,
+                          clientX: e.clientX,
+                          clientY: e.clientY,
+                        });
+                        if (intent === "none")
+                          return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        clearMpfDropTargets();
+                        activeMpfNodeDrag = null;
+                        void applyPreviewNodeDrop({
+                          source,
+                          target: { kind: node.type, name },
+                          intent,
+                        });
+                      }}
+                      onDragEnd={() => {
+                        clearMpfDropTargets();
+                        activeMpfNodeDrag = null;
+                      }}
                       onClick={(e) => {
                         e.preventDefault();
                         setSelectedItem({ type: node.type, name });
@@ -2222,6 +2566,12 @@ export default function MaterialPreviewFloat({
                         }
                       }}
                     >
+                      {isReorderTarget && reorderPlacement === "before" && (
+                        <div className="pointer-events-none absolute left-3 right-3 top-0 h-[2px] bg-[color:var(--tc-mpf-accent)] rounded" />
+                      )}
+                      {isReorderTarget && reorderPlacement === "after" && (
+                        <div className="pointer-events-none absolute left-3 right-3 bottom-0 h-[2px] bg-[color:var(--tc-mpf-accent)] rounded" />
+                      )}
                       <div className="flex items-center gap-3 min-w-0">
                         {!compactList && (
                           <div
