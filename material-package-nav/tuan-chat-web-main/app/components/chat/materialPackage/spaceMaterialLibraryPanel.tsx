@@ -129,7 +129,7 @@ function parseRootKeySpacePackageId(key: string) {
   return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-const SPACE_MATERIAL_MOVE_TYPE = "application/x-tc-space-material-move";
+export const SPACE_MATERIAL_MOVE_TYPE = "application/x-tc-space-material-move";
 
 type SpaceMaterialMovePayload = {
   spaceId: number;
@@ -205,6 +205,12 @@ function isSpaceMaterialMoveDrag(dataTransfer: DataTransfer | null) {
     // ignore
   }
   return Boolean(getSpaceMaterialMoveDragData(dataTransfer));
+}
+
+export function shouldCaptureSpaceMaterialDockZonePreviewDnd(dataTransfer: DataTransfer | null) {
+  if (isSpaceMaterialMoveDrag(dataTransfer))
+    return false;
+  return isMaterialPreviewDrag(dataTransfer);
 }
 
 function tokenToName(token: string, prefix: "folder:" | "material:") {
@@ -2603,9 +2609,9 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
           clearDockHint();
           return;
         }
-        e.preventDefault();
         if (!isMaterialPreviewDrag(e.dataTransfer))
           return;
+        e.preventDefault();
         const origin = getMaterialPreviewDragOrigin(e.dataTransfer) ?? "tree";
         e.dataTransfer.dropEffect = origin === "docked" ? "move" : "copy";
         const index = computeInsertIndex(e.clientY);
@@ -2617,6 +2623,8 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       }}
       onDropCapture={(e) => {
         if (isSpaceMaterialMoveDrag(e.dataTransfer))
+          return;
+        if (!isMaterialPreviewDrag(e.dataTransfer))
           return;
         e.preventDefault();
         e.stopPropagation();
