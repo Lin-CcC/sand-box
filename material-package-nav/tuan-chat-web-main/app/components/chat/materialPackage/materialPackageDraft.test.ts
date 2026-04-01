@@ -7,6 +7,7 @@ import {
   draftCreateMaterial,
   draftDeleteFolder,
   draftDeleteMaterial,
+  draftMoveNode,
   draftRenameFolder,
   draftRenameMaterial,
   draftReorderNode,
@@ -157,6 +158,58 @@ describe("materialPackageDraft", () => {
 
     const folder = next.root[0] as any;
     expect(folder.children.map((n: any) => `${n.type}:${n.name}`)).toEqual(["folder:F2", "folder:F1", "material:M1"]);
+  });
+
+  it("支持在不同文件夹之间移动素材（保留 messages/note）", () => {
+    const base: MaterialPackageContent = {
+      version: 1,
+      root: [
+        {
+          type: "folder",
+          name: "场景",
+          children: [
+            { type: "material", name: "A", note: "n", messages: [{ messageType: 2, extra: { imageMessage: { url: "u" } } }] },
+          ],
+        },
+        { type: "folder", name: "目标", children: [] },
+      ],
+    };
+
+    const next = draftMoveNode(
+      base,
+      { parentPath: ["场景"], source: { type: "material", name: "A" } },
+      { folderPath: ["目标"] },
+    );
+
+    const from = next.root.find(n => n.type === "folder" && n.name === "场景") as any;
+    const to = next.root.find(n => n.type === "folder" && n.name === "目标") as any;
+    expect(from.children).toHaveLength(0);
+    expect(to.children).toHaveLength(1);
+    expect(to.children[0]).toMatchObject({ type: "material", name: "A", note: "n" });
+    expect(to.children[0].messages?.[0]?.extra?.imageMessage?.url).toBe("u");
+  });
+
+  it("支持在不同文件夹之间移动文件夹（保留 children）", () => {
+    const base: MaterialPackageContent = {
+      version: 1,
+      root: [
+        { type: "folder", name: "父", children: [{ type: "folder", name: "子", children: [{ type: "material", name: "M", note: "", messages: [] }] }] },
+        { type: "folder", name: "目标", children: [] },
+      ],
+    };
+
+    const next = draftMoveNode(
+      base,
+      { parentPath: ["父"], source: { type: "folder", name: "子" } },
+      { folderPath: ["目标"] },
+    );
+
+    const from = next.root.find(n => n.type === "folder" && n.name === "父") as any;
+    const to = next.root.find(n => n.type === "folder" && n.name === "目标") as any;
+    expect(from.children.map((n: any) => n.name)).toEqual([]);
+    expect(to.children).toHaveLength(1);
+    expect(to.children[0]).toMatchObject({ type: "folder", name: "子" });
+    expect(to.children[0].children?.[0]).toMatchObject({ type: "material", name: "M" });
   });
 });
 

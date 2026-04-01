@@ -224,6 +224,30 @@ function reorderNodeByName(nodes: MaterialNode[], source: DraftNodeRef, insertBe
   return next;
 }
 
+function removeNodeByRef(nodes: MaterialNode[], source: DraftNodeRef): { nodes: MaterialNode[]; removed: MaterialNode | null } {
+  const name = source.name.trim();
+  if (!name)
+    return { nodes, removed: null };
+  const index = nodes.findIndex(n => n.type === source.type && n.name === name);
+  if (index < 0)
+    return { nodes, removed: null };
+  const removed = nodes[index] as MaterialNode;
+  const next = nodes.slice();
+  next.splice(index, 1);
+  return { nodes: next, removed };
+}
+
+function getNodesAtPathFromRoot(root: MaterialNode[], folderPath: string[]): MaterialNode[] | null {
+  let current: MaterialNode[] = root;
+  for (const folderName of folderPath) {
+    const nextFolder = current.find(n => n.type === "folder" && n.name === folderName) as MaterialFolderNode | undefined;
+    if (!nextFolder)
+      return null;
+    current = Array.isArray(nextFolder.children) ? nextFolder.children : [];
+  }
+  return current;
+}
+
 export function draftReplaceMaterialMessages(
   content: MaterialPackageContent,
   folderPath: string[],
@@ -261,6 +285,39 @@ export function draftReorderNode(
 ): MaterialPackageContent {
   const insertBefore = options?.insertBefore ?? undefined;
   return updateContentAtPath(content, folderPath, nodes => reorderNodeByName(nodes, source, insertBefore));
+}
+
+export function draftMoveNode(
+  content: MaterialPackageContent,
+  from: { parentPath: string[]; source: DraftNodeRef; nextName?: string },
+  dest: { folderPath: string[] },
+): MaterialPackageContent {
+  const parentPath = Array.isArray(from?.parentPath) ? from.parentPath : [];
+  const folderPath = Array.isArray(dest?.folderPath) ? dest.folderPath : [];
+  const sameParent = parentPath.length === folderPath.length && parentPath.every((name, idx) => folderPath[idx] === name);
+  if (sameParent && !from?.nextName)
+    return content;
+
+  const root = Array.isArray(content.root) ? content.root : [];
+  const siblings = getNodesAtPathFromRoot(root, parentPath);
+  if (!siblings)
+    return content;
+
+  const fromName = from.source.name.trim();
+  if (!fromName)
+    return content;
+  const removed = siblings.find(n => n.type === from.source.type && n.name === fromName) as MaterialNode | undefined;
+  if (!removed)
+    return content;
+
+  const afterRemove = updateContentAtPath(content, parentPath, nodes => removeNodeByRef(nodes, from.source).nodes);
+
+  const nextName = typeof from.nextName === "string" ? from.nextName.trim() : "";
+  const normalizedNode: MaterialNode = nextName && nextName !== removed.name
+    ? ({ ...removed, name: nextName } as MaterialNode)
+    : removed;
+
+  return updateContentAtPath(afterRemove, folderPath, nodes => [...nodes, normalizedNode]);
 }
 
 export function buildEmptyMaterialPackageContent(): MaterialPackageContent {
