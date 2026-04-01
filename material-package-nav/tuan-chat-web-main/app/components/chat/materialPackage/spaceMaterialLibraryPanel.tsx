@@ -1,4 +1,4 @@
-import type { MaterialItemNode, MaterialPackageContent, MaterialPackageRecord, SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
+﻿import type { MaterialItemNode, MaterialPackageContent, MaterialPackageRecord, SpaceMaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -15,6 +15,7 @@ import { setMaterialBatchDragData } from "@/components/chat/materialPackage/mate
 import MaterialPackageSquareView from "@/components/chat/materialPackage/materialPackageSquareView";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import { autoRenameVsCodeLike } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { isClickSuppressed, markClickSuppressed } from "@/components/chat/materialPackage/materialPackageClickSuppressor";
 import type { MaterialFolderNode, MaterialNode } from "@/components/materialPackage/materialPackageApi";
 import { draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReorderNode } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
@@ -22,7 +23,7 @@ import { AddIcon, ChevronDown, FolderIcon } from "@/icons";
 import { readMockPackages as readMyMockPackages } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { findMockPackageById } from "@/components/chat/materialPackage/materialPackageMockStore";
 import { nowIso, readSpaceMockPackages, writeSpaceMockPackages } from "@/components/chat/materialPackage/spaceMaterialMockStore";
-import { ArrowClockwise, DownloadSimple, FileArrowUp, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
+import { ArrowClockwise, DownloadSimple, FileImageIcon, FilePlus, FolderPlus, PackageIcon, Plus, TrashIcon, UploadSimple } from "@phosphor-icons/react";
 import {
   createSpaceMaterialPackage,
   deleteSpaceMaterialPackage,
@@ -1572,10 +1573,10 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }
   }, [closeImportFromMy, queryClient, selectedMyPackageId, spaceId, useBackend]);
 
-  const handleCreate = useCallback(async () => {
-    const name = "新素材箱";
-    if (!useBackend) {
-      const base = readMockPackages(spaceId);
+	  const handleCreate = useCallback(async () => {
+	    const name = "新素材箱";
+	    if (!useBackend) {
+	      const base = readMockPackages(spaceId);
       const nextId = Math.max(0, ...base.map(p => p.spacePackageId)) + 1;
       const next: SpaceMaterialPackageRecord = {
         spacePackageId: nextId,
@@ -1611,13 +1612,28 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     catch (error) {
       const message = error instanceof Error ? error.message : "创建失败";
       toast.error(message, { id: toastId });
-    }
-  }, [queryClient, spaceId, useBackend]);
+	    }
+	  }, [queryClient, spaceId, useBackend]);
 
-  const handleToolbarNewFile = useCallback(async () => {
-    const targetPackageId = activePackageId;
-    if (!isValidId(targetPackageId)) {
-      window.alert("请先展开或选中一个局内素材箱。");
+	  const getSelectedFolderPath = useCallback(() => {
+	    if (!selectedNode)
+	      return [] as string[];
+	    if (selectedNode.kind === "package")
+	      return [] as string[];
+
+	    const marker = `:${selectedNode.packageId}:`;
+	    const idx = selectedNode.key.indexOf(marker);
+	    if (idx < 0)
+	      return [] as string[];
+	    const rest = selectedNode.key.slice(idx + marker.length);
+	    const tokens = rest ? rest.split("/").filter(Boolean) : [];
+	    return payloadPathToFolderNames(tokens);
+	  }, [selectedNode]);
+
+	  const handleToolbarNewFile = useCallback(async () => {
+	    const targetPackageId = activePackageId;
+	    if (!isValidId(targetPackageId)) {
+	      window.alert("请先展开或选中一个局内素材箱。");
       return;
     }
 
@@ -1647,37 +1663,51 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     }, 0);
   }, [activePackageId, loadPackageContent, savePackageContent]);
 
-  const handleToolbarNewFolder = useCallback(async () => {
-    const targetPackageId = activePackageId;
-    if (!isValidId(targetPackageId)) {
-      window.alert("请先展开或选中一个局内素材箱。");
-      return;
-    }
+	  const handleToolbarNewFolder = useCallback(async () => {
+	    const targetPackageId = activePackageId;
+	    if (!isValidId(targetPackageId)) {
+	      window.alert("请先展开或选中一个局内素材箱。");
+	      return;
+	    }
 
-    const baseContent = await loadPackageContent(targetPackageId);
-    const nodes = getFolderNodesAtPath(baseContent, []);
-    const usedNames = nodes.map(n => n.name);
+	    const baseContent = await loadPackageContent(targetPackageId);
+	    const folderPath = selectedNode && Number(selectedNode.packageId) === Number(targetPackageId) ? getSelectedFolderPath() : [];
+	    const nodes = getFolderNodesAtPath(baseContent, folderPath);
+	    const usedNames = nodes.map(n => n.name);
 
-    const name = window.prompt("新建文件夹名称", "新建文件夹");
-    const trimmed = (name ?? "").trim();
-    if (!trimmed)
-      return;
-    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
-    if (finalName !== trimmed) {
-      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
-    }
+	    const name = window.prompt("新建文件夹名称", "新建文件夹");
+	    const trimmed = (name ?? "").trim();
+	    if (!trimmed)
+	      return;
+	    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
+	    if (finalName !== trimmed) {
+	      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+	    }
 
-    const nextContent = draftCreateFolder(baseContent, [], finalName);
-    await savePackageContent(targetPackageId, nextContent);
+	    const nextContent = draftCreateFolder(baseContent, folderPath, finalName);
+	    await savePackageContent(targetPackageId, nextContent);
 
-    const nodeKey = `folder:${targetPackageId}:folder:${finalName}`;
-    setSelectedNode({ kind: "folder", key: nodeKey, packageId: targetPackageId });
-    setExpandedId(targetPackageId);
-    toast.success("已新建文件夹");
-    setTimeout(() => {
-      document.querySelector(`[data-node-key="${nodeKey}"]`)?.scrollIntoView({ block: "nearest" });
-    }, 0);
-  }, [activePackageId, loadPackageContent, savePackageContent]);
+	    const tokens = [...folderPath.map(makeFolderToken), makeFolderToken(finalName)];
+	    const nodeKey = `folder:${targetPackageId}:${tokens.join("/")}`;
+	    setSelectedNode({ kind: "folder", key: nodeKey, packageId: targetPackageId });
+	    setExpandedId(targetPackageId);
+	    setCollapsedFolderByKey((prev) => {
+	      let changed = false;
+	      const next: Record<string, boolean> = { ...prev };
+	      for (let i = 0; i < tokens.length; i += 1) {
+	        const k = `folder:${targetPackageId}:${tokens.slice(0, i + 1).join("/")}`;
+	        if (next[k] === true) {
+	          next[k] = false;
+	          changed = true;
+	        }
+	      }
+	      return changed ? next : prev;
+	    });
+	    toast.success("已新建文件夹");
+	    setTimeout(() => {
+	      document.querySelector(`[data-node-key="${nodeKey}"]`)?.scrollIntoView({ block: "nearest" });
+	    }, 0);
+	  }, [activePackageId, getSelectedFolderPath, loadPackageContent, savePackageContent, selectedNode, setCollapsedFolderByKey]);
 
   const handleToolbarDelete = useCallback(() => {
     if (selectedNode?.kind !== "package" || !isValidId(selectedNode.packageId)) {
@@ -1688,24 +1718,9 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
     setIsDeleteConfirmOpen(true);
   }, [selectedNode]);
 
-  const getSelectedFolderPath = useCallback(() => {
-    if (!selectedNode)
-      return [] as string[];
-    if (selectedNode.kind === "package")
-      return [] as string[];
-
-    const marker = `:${selectedNode.packageId}:`;
-    const idx = selectedNode.key.indexOf(marker);
-    if (idx < 0)
-      return [] as string[];
-    const rest = selectedNode.key.slice(idx + marker.length);
-    const tokens = rest ? rest.split("/").filter(Boolean) : [];
-    return payloadPathToFolderNames(tokens);
-  }, [selectedNode]);
-
-  const buildMessagesFromFile = useCallback(async (file: File) => {
-    const type = String(file.type ?? "").toLowerCase();
-    const ext = String(file.name ?? "").toLowerCase();
+	  const buildMessagesFromFile = useCallback(async (file: File) => {
+	    const type = String(file.type ?? "").toLowerCase();
+	    const ext = String(file.name ?? "").toLowerCase();
 
     const isImage = type.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(ext);
     const isAudio = type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac|flac)$/.test(ext);
@@ -1919,13 +1934,13 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         >
           <div
             className={`flex items-center gap-2 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
-            draggable
-            onDragStart={(e) => {
-              suppressPackageClickUntilMsRef.current = Date.now() + 500;
-              // 默认：拖拽用于“素材箱排序”，避免误触发“拖拽打开预览”
-              // 按住 Alt：允许作为预览拖拽（与“我的素材包”一致）
-              if (!canEdit || e.altKey) {
-                spacePackageReorderDragRef.current = null;
+	            draggable
+	            onDragStart={(e) => {
+	              markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
+	              // 默认：拖拽用于“素材箱排序”，避免误触发“拖拽打开预览”
+	              // 按住 Alt：允许作为预览拖拽（与“我的素材包”一致）
+	              if (!canEdit || e.altKey) {
+	                spacePackageReorderDragRef.current = null;
                 e.dataTransfer.effectAllowed = "copy";
                 setMaterialPreviewDragData(e.dataTransfer, item.payload);
                 setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
@@ -2008,14 +2023,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
               if (Number.isFinite(sourceId) && sourceId > 0 && targetId && sourceId !== targetId) {
                 reorderSpacePackageOrder({ sourceId, targetId, placement });
               }
-            }}
-            onClick={() => {
-              if (Date.now() < suppressPackageClickUntilMsRef.current) {
-                return;
-              }
-              setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
-              setExpandedId(item.isExpanded ? null : spacePackageId);
-            }}
+	            }}
+	            onClick={() => {
+	              if (isClickSuppressed(suppressPackageClickUntilMsRef, Date.now())) {
+	                return;
+	              }
+	              setSelectedNode({ kind: "package", key: item.key, packageId: spacePackageId });
+	              setExpandedId(item.isExpanded ? null : spacePackageId);
+	            }}
             onDoubleClick={(e) => {
               const target = e.target as HTMLElement | null;
               if (target?.closest?.("[data-inline-rename='1']")) {
@@ -2119,13 +2134,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
         >
           <div
             className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
-            style={{ paddingLeft: 4 + item.depth }}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = canEdit ? "copyMove" : "copy";
-              setMaterialPreviewDragData(e.dataTransfer, item.payload);
-              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
-              if (canEdit) {
+	            style={{ paddingLeft: 4 + item.depth }}
+	            draggable
+	            onDragStart={(e) => {
+	              markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
+	              e.dataTransfer.effectAllowed = canEdit ? "copyMove" : "copy";
+	              setMaterialPreviewDragData(e.dataTransfer, item.payload);
+	              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+	              if (canEdit) {
                 setSpaceMaterialMoveDragData(e.dataTransfer, {
                   spaceId,
                   packageId: spacePackageId,
@@ -2304,13 +2320,14 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
       >
         <div
           className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${isSelected || isMultiSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
-          style={{ paddingLeft: 22 + item.depth }}
-          draggable
-          onDragStart={(e) => {
-            const isMultiDrag = selectedMaterialPayloadsInOrder.length > 1 && selectedMaterialKeys.has(item.key);
-            e.dataTransfer.effectAllowed = isMultiDrag ? "copy" : (canEdit ? "copyMove" : "copy");
-            setMaterialPreviewDragData(e.dataTransfer, item.payload);
-            setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+	          style={{ paddingLeft: 22 + item.depth }}
+	          draggable
+	          onDragStart={(e) => {
+	            markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
+	            const isMultiDrag = selectedMaterialPayloadsInOrder.length > 1 && selectedMaterialKeys.has(item.key);
+	            e.dataTransfer.effectAllowed = isMultiDrag ? "copy" : (canEdit ? "copyMove" : "copy");
+	            setMaterialPreviewDragData(e.dataTransfer, item.payload);
+	            setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
             if (isMultiDrag) {
               setMaterialBatchDragData(e.dataTransfer, { items: selectedMaterialPayloadsInOrder });
               return;
@@ -2581,26 +2598,37 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                     <Plus className="size-4" />
                   </button>
                 </PortalTooltip>
-                <PortalTooltip label="导入素材包" placement="bottom">
-                  <button
+	                <PortalTooltip label={baseItemCount > 0 ? "本地导入素材" : "暂无局内素材箱"} placement="bottom">
+	                  <button
+	                    type="button"
+	                    className="btn btn-ghost btn-xs btn-square"
+	                    disabled={baseItemCount === 0}
+	                    onClick={handleToolbarLocalImport}
+	                    aria-label="本地导入素材"
+	                  >
+	                    <UploadSimple className="size-4" />
+	                  </button>
+	                </PortalTooltip>
+	                <PortalTooltip label="从我的素材包导入素材箱" placement="bottom">
+	                  <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    onClick={() => { setIsImportOpen(true); }}
-                    aria-label="导入素材包"
-                  >
-                    <UploadSimple className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label="从我的素材包导入素材箱" placement="bottom">
-                  <button
+	                    onClick={() => { setIsImportFromMyOpen(true); }}
+	                    aria-label="从我的素材包导入"
+	                  >
+	                    <PackageIcon className="size-4" />
+	                  </button>
+	                </PortalTooltip>
+	                <PortalTooltip label="导入素材包" placement="bottom">
+	                  <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    onClick={() => { setIsImportFromMyOpen(true); }}
-                    aria-label="从我的素材包导入"
-                  >
-                    <DownloadSimple className="size-4" />
-                  </button>
-                </PortalTooltip>
+	                    onClick={() => { setIsImportOpen(true); }}
+	                    aria-label="导入素材包"
+	                  >
+	                    <DownloadSimple className="size-4" />
+	                  </button>
+	                </PortalTooltip>
                 <PortalTooltip label="刷新" placement="bottom">
                   <button
                     type="button"
@@ -2620,17 +2648,6 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
                     aria-label="删除"
                   >
                     <TrashIcon className="size-4" />
-                  </button>
-                </PortalTooltip>
-                <PortalTooltip label={baseItemCount > 0 ? "本地导入素材" : "暂无局内素材箱"} placement="bottom">
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs btn-square"
-                    disabled={baseItemCount === 0}
-                    onClick={handleToolbarLocalImport}
-                    aria-label="本地导入素材"
-                  >
-                    <FileArrowUp className="size-4" />
                   </button>
                 </PortalTooltip>
               </div>
@@ -2862,3 +2879,5 @@ export function SpaceMaterialLibraryCategory({ spaceId, spaceName, canEdit }: Sp
 }
 
 export default SpaceMaterialLibraryCategory;
+
+

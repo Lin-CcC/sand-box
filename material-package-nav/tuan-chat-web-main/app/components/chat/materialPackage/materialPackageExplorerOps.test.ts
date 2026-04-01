@@ -4,6 +4,7 @@ import type { MaterialPackageRecord } from "@/components/materialPackage/materia
 import type { MaterialPreviewPayload } from "@/components/chat/materialPackage/materialPackageDnd";
 import {
   autoRenameVsCodeLike,
+  folderPathEqual,
   payloadPathToFolderNames,
   resolveTarget,
 } from "@/components/chat/materialPackage/materialPackageExplorerOps";
@@ -48,6 +49,16 @@ describe("materialPackageExplorerOps", () => {
     expect(payloadPathToFolderNames(["folder:场景", "material:a.png", "folder:子"])).toEqual(["场景", "子"]);
   });
 
+  it("folderPathEqual: 相同内容视为相等", () => {
+    expect(folderPathEqual(["a", "b"], ["a", "b"])).toBe(true);
+    expect(folderPathEqual([], [])).toBe(true);
+  });
+
+  it("folderPathEqual: 不同内容/长度视为不相等", () => {
+    expect(folderPathEqual(["a"], ["a", "b"])).toBe(false);
+    expect(folderPathEqual(["a", "c"], ["a", "b"])).toBe(false);
+  });
+
   it("resolveTarget: packages==0 => blocked", () => {
     const res = resolveTarget({ selectedNode: null, packages: [], defaultTargetPackageId: null });
     expect(res).toEqual({ status: "blocked", reason: "no-packages" });
@@ -78,4 +89,3 @@ describe("materialPackageExplorerOps", () => {
     expect(res).toEqual({ status: "need-choose-package" });
   });
 });
-

@@ -54,6 +54,18 @@ export function payloadPathToFolderNames(path: string[] | undefined | null) {
   return result;
 }
 
+export function folderPathEqual(a: string[] | undefined | null, b: string[] | undefined | null) {
+  const aa = Array.isArray(a) ? a : [];
+  const bb = Array.isArray(b) ? b : [];
+  if (aa.length !== bb.length)
+    return false;
+  for (let i = 0; i < aa.length; i += 1) {
+    if (aa[i] !== bb[i])
+      return false;
+  }
+  return true;
+}
+
 export function resolveTarget(args: {
   selectedNode: SelectedExplorerNode;
   packages: MaterialPackageRecord[];

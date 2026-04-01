@@ -21,7 +21,8 @@ import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage
 import { buildMaterialPackageDetailQueryKey, buildMaterialPackageMyQueryKey, buildMaterialPackageSquareQueryKey } from "@/components/chat/materialPackage/materialPackageQueries";
 import { applyVisibilityToSquare, removeSquareRecord } from "@/components/chat/materialPackage/materialPackageSquareCache";
 import type { SelectedExplorerNode } from "@/components/chat/materialPackage/materialPackageExplorerOps";
-import { autoRenameVsCodeLike, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { autoRenameVsCodeLike, folderPathEqual, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
+import { isClickSuppressed, markClickSuppressed } from "@/components/chat/materialPackage/materialPackageClickSuppressor";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
 import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftMoveNode, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
@@ -636,12 +637,17 @@ export default function MaterialPackageNavPanel({
     if (!sourceName)
       return;
 
-    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
-    const destFolderPath = Array.isArray(dest.folderPath) ? dest.folderPath : [];
+	    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+	    const destFolderPath = Array.isArray(dest.folderPath) ? dest.folderPath : [];
 
-    if (source.kind === "folder") {
-      const fromPath = sourceFolderNames;
-      const isDescendant = destFolderPath.length >= fromPath.length
+	    if (folderPathEqual(sourceParentPath, destFolderPath)) {
+	      // 拖回原文件夹：视为 no-op，避免误触发自动重命名
+	      return;
+	    }
+
+	    if (source.kind === "folder") {
+	      const fromPath = sourceFolderNames;
+	      const isDescendant = destFolderPath.length >= fromPath.length
         && fromPath.every((name, idx) => destFolderPath[idx] === name);
       if (isDescendant) {
         toast.error("不能将文件夹移动到自身或其子目录中。");
@@ -1845,14 +1851,14 @@ export default function MaterialPackageNavPanel({
           data-base-index={item.baseIndex}
         >
           <div
-            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
-            draggable
-            onDragStart={(e) => {
-              suppressPackageClickUntilMsRef.current = Date.now() + 500;
+	            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
+	            draggable
+	            onDragStart={(e) => {
+	              markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
 
-              if (e.altKey) {
-                packageReorderDragRef.current = null;
-                e.dataTransfer.effectAllowed = "copy";
+	              if (e.altKey) {
+	                packageReorderDragRef.current = null;
+	                e.dataTransfer.effectAllowed = "copy";
                 setMaterialPreviewDragData(e.dataTransfer, item.payload);
                 setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
                 return;
@@ -1909,13 +1915,13 @@ export default function MaterialPackageNavPanel({
               if (Number.isFinite(sourceId) && sourceId > 0 && targetId && sourceId !== targetId) {
                 reorderPackageOrder({ sourceId, targetId, placement });
               }
-            }}
-            onClick={(e) => {
-              if (Date.now() < suppressPackageClickUntilMsRef.current) {
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-              }
+	            }}
+	            onClick={(e) => {
+	              if (isClickSuppressed(suppressPackageClickUntilMsRef, Date.now())) {
+	                e.preventDefault();
+	                e.stopPropagation();
+	                return;
+	              }
               setSelectedNode({ kind: "package", key: item.key, payload: item.payload });
               const target = e.target as HTMLElement | null;
               const action = target?.closest?.("[data-inline-rename='1']") ? "rename" : "open";
@@ -2026,13 +2032,14 @@ export default function MaterialPackageNavPanel({
         >
           <div
             className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
-            style={{ paddingLeft: `${item.depth + 2}px` }}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = "copyMove";
-              setMaterialPreviewDragData(e.dataTransfer, item.payload);
-              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
-              setMaterialPackageReorderDragData(e.dataTransfer, {
+	            style={{ paddingLeft: `${item.depth + 2}px` }}
+	            draggable
+	            onDragStart={(e) => {
+	              markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
+	              e.dataTransfer.effectAllowed = "copyMove";
+	              setMaterialPreviewDragData(e.dataTransfer, item.payload);
+	              setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+	              setMaterialPackageReorderDragData(e.dataTransfer, {
                 packageId: Number(item.payload.packageId),
                 kind: "folder",
                 path: item.payload.path,
@@ -2196,13 +2203,14 @@ export default function MaterialPackageNavPanel({
         className={`flex items-center gap-2 py-1 pr-2 text-xs opacity-85 select-none rounded-md ${selectedNode?.key === item.key ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
         style={{ paddingLeft: `${item.depth + 18}px` }}
         data-role="material-package-visible-row"
-        data-base-index={item.baseIndex}
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.effectAllowed = "copyMove";
-          setMaterialPreviewDragData(e.dataTransfer, item.payload);
-          setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
-          setMaterialPackageReorderDragData(e.dataTransfer, {
+	        data-base-index={item.baseIndex}
+	        draggable
+	        onDragStart={(e) => {
+	          markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
+	          e.dataTransfer.effectAllowed = "copyMove";
+	          setMaterialPreviewDragData(e.dataTransfer, item.payload);
+	          setMaterialPreviewDragOrigin(e.dataTransfer, "tree");
+	          setMaterialPackageReorderDragData(e.dataTransfer, {
             packageId: Number(item.payload.packageId),
             kind: "material",
             path: item.payload.path,
