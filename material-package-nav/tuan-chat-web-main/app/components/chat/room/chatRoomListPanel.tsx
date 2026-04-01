@@ -17,7 +17,7 @@ import useRoomSidebarTreeActions from "@/components/chat/room/useRoomSidebarTree
 import useRoomSidebarTreeState from "@/components/chat/room/useRoomSidebarTreeState";
 import SpaceHeaderBar from "@/components/chat/space/spaceHeaderBar";
 import { SpaceMaterialLibraryCategory } from "@/components/chat/materialPackage/spaceMaterialLibraryPanel";
-import MaterialSendTray from "@/components/chat/materialPackage/materialSendTray";
+import MaterialSendConfirmDialog from "@/components/chat/materialPackage/materialSendConfirmDialog";
 import { useDocHeaderOverrideStore } from "@/components/chat/stores/docHeaderOverrideStore";
 import LeftChatList from "@/components/privateChat/LeftChatList";
 import { collectExistingDocIds, collectExistingRoomIds } from "./sidebarTree";
@@ -399,8 +399,7 @@ export default function ChatRoomListPanel({
               />
             </>
           )}
-
-      <MaterialSendTray />
+      <MaterialSendConfirmDialog />
     </div>
   );
 }

@@ -6,13 +6,12 @@ import toast from "react-hot-toast";
 import RoomButton from "@/components/chat/shared/components/roomButton";
 import { getMaterialPreviewDragData, isMaterialPreviewDrag } from "@/components/chat/materialPackage/materialPackageDnd";
 import { getMaterialBatchDragData, isMaterialBatchDrag } from "@/components/chat/materialPackage/materialPackageDndBatch";
-import { useMaterialSendTrayStore } from "@/components/chat/stores/materialSendTrayStore";
+import { useMaterialSendConfirmStore } from "@/components/chat/stores/materialSendConfirmStore";
 import {
   materialMessagesToChatRequests,
-  resolveMaterialMessageCountFromPayload,
   resolveMaterialMessagesFromPayload,
-  resolveMaterialPayloadsFromPayload,
 } from "@/components/chat/materialPackage/materialPackageSendUtils";
+import { buildChatRequestsFromMaterialPayloads } from "@/components/chat/materialPackage/materialPackageSendPlanner";
 import { setRoomRefDragData } from "@/components/chat/utils/roomRef";
 import { setSubWindowDragPayload } from "@/components/chat/utils/subWindowDragPayload";
 import { getMaterialPackage, getSpaceMaterialPackage } from "@/components/materialPackage/materialPackageApi";
@@ -87,16 +86,6 @@ export default function RoomSidebarRoomItem({
         ? await getSpaceMaterialPackage(payload.packageId)
         : await getMaterialPackage(payload.packageId);
 
-      if (payload.kind === "folder") {
-        const messagesTotal = resolveMaterialMessageCountFromPayload(pkg?.content, payload);
-        if (messagesTotal > 10) {
-          const items = resolveMaterialPayloadsFromPayload(pkg?.content, payload);
-          useMaterialSendTrayStore.getState().replace(items);
-          window.dispatchEvent(new CustomEvent("tc:material-send-tray:set-target-room", { detail: { roomId } }));
-          toast(`素材较多（${messagesTotal}条），已加入发送队列。`, { id: loadingId });
-          return;
-        }
-      }
       const messages = resolveMaterialMessagesFromPayload(pkg?.content, payload);
       if (!messages.length) {
         toast("该素材没有可发送的消息。", { id: loadingId });
@@ -104,6 +93,16 @@ export default function RoomSidebarRoomItem({
       }
 
       const requests = materialMessagesToChatRequests(roomId, messages);
+      if (requests.length > 10) {
+        useMaterialSendConfirmStore.getState().open({
+          roomId,
+          roomLabel: String(room?.name ?? "").trim() ? String(room.name) : null,
+          count: requests.length,
+          requests,
+        });
+        toast(`素材较多（${requests.length}条），请确认发送。`, { id: loadingId });
+        return;
+      }
       await tuanchat.chatController.batchSendMessages(requests);
       toast.success(`已发送 ${requests.length} 条消息`, { id: loadingId });
     }
@@ -189,9 +188,49 @@ export default function RoomSidebarRoomItem({
           const batch = getMaterialBatchDragData(e.dataTransfer);
           if (!batch?.items?.length)
             return;
-          useMaterialSendTrayStore.getState().replace(batch.items);
-          window.dispatchEvent(new CustomEvent("tc:material-send-tray:set-target-room", { detail: { roomId } }));
-          toast.success(`已加入发送队列（${batch.items.length}项）`);
+
+          const defaultUseBackend = !(import.meta.env.MODE === "test");
+          let useBackend = defaultUseBackend;
+          try {
+            const raw = localStorage.getItem("tc:material-package:use-backend");
+            if (raw != null)
+              useBackend = raw === "true";
+          }
+          catch {
+            // ignore
+          }
+
+          if (!useBackend) {
+            toast.success("mock：已模拟发送素材（不写入后端）。");
+            return;
+          }
+
+          const loadingId = toast.loading("正在发送素材…");
+          void (async () => {
+            try {
+              const requests = await buildChatRequestsFromMaterialPayloads(roomId, batch.items);
+              if (!requests.length) {
+                toast("该素材没有可发送的消息。", { id: loadingId });
+                return;
+              }
+              if (requests.length > 10) {
+                useMaterialSendConfirmStore.getState().open({
+                  roomId,
+                  roomLabel: String(room?.name ?? "").trim() ? String(room.name) : null,
+                  count: requests.length,
+                  requests,
+                });
+                toast(`素材较多（${requests.length}条），请确认发送。`, { id: loadingId });
+                return;
+              }
+              await tuanchat.chatController.batchSendMessages(requests);
+              toast.success(`已发送 ${requests.length} 条消息`, { id: loadingId });
+            }
+            catch (error) {
+              const message = error instanceof Error ? error.message : "发送失败";
+              toast.error(message, { id: loadingId });
+            }
+          })();
           return;
         }
         if (isMaterialPreviewDrag(e.dataTransfer)) {
