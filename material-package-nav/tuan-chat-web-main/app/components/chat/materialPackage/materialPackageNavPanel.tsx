@@ -27,6 +27,7 @@ import { getFolderNodesAtPath } from "@/components/chat/materialPackage/material
 import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftMoveNode, draftMoveNodeAcrossContents, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
 import { computeVisibilityPopoverPos } from "@/components/chat/materialPackage/materialPackageVisibilityPopoverPos";
+import { computeTreeFolderRowDropDecision } from "@/components/chat/materialPackage/materialPackageTreeDrop";
 import {
   isMaterialPreviewDrag,
   getMaterialPreviewDragData,
@@ -1906,7 +1907,17 @@ export default function MaterialPackageNavPanel({
             onDragOver={(e) => {
               const sourceId = Number(packageReorderDragRef.current?.sourceId ?? -1);
               if (!Number.isFinite(sourceId) || sourceId <= 0)
-                return;
+                {
+                  const source = getMaterialPackageReorderDragData(e.dataTransfer);
+                  if (!source || source.kind === "package")
+                    return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = "move";
+                  setReorderDropTargetKey(null);
+                  setMoveDropTargetKey(null);
+                  return;
+                }
               if (sourceId === packageId)
                 return;
               e.preventDefault();
@@ -1926,7 +1937,17 @@ export default function MaterialPackageNavPanel({
             onDrop={(e) => {
               const sourceId = Number(packageReorderDragRef.current?.sourceId ?? -1);
               if (!Number.isFinite(sourceId) || sourceId <= 0)
-                return;
+                {
+                  const source = getMaterialPackageReorderDragData(e.dataTransfer);
+                  if (!source || source.kind === "package")
+                    return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setReorderDropTargetKey(null);
+                  setMoveDropTargetKey(null);
+                  void moveNode({ source, dest: { packageId, folderPath: [] } });
+                  return;
+                }
               if (sourceId === packageId)
                 return;
               e.preventDefault();
@@ -2080,33 +2101,28 @@ export default function MaterialPackageNavPanel({
               const source = getMaterialPackageReorderDragData(e.dataTransfer);
               if (!source)
                 return;
-              if (Number(source.packageId) !== Number(item.payload.packageId))
-                return;
 
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               const localY = e.clientY - rect.top;
               const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
-              if (isBeforeZone) {
-                const sourceFolderNames = payloadPathToFolderNames(source.path);
-                const sourceParent = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
-                const sameParent = sourceParent.length === parentFolderPath.length
-                  && sourceParent.every((name, idx) => parentFolderPath[idx] === name);
-                if (!sameParent)
-                  return;
-
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = "move";
-                setReorderDropTargetKey(item.key);
-                setMoveDropTargetKey(null);
-                return;
-              }
+              const sourceFolderNames = payloadPathToFolderNames(source.path);
+              const sourceParent = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+              const sameParent = sourceParent.length === parentFolderPath.length
+                && sourceParent.every((name, idx) => parentFolderPath[idx] === name);
+              const samePackage = Number(source.packageId) === Number(item.payload.packageId);
+              const decision = computeTreeFolderRowDropDecision({ samePackage, sameParent, isBeforeZone });
 
               e.preventDefault();
               e.stopPropagation();
               e.dataTransfer.dropEffect = "move";
-              setMoveDropTargetKey(item.key);
-              setReorderDropTargetKey(null);
+              if (decision === "reorder") {
+                setReorderDropTargetKey(item.key);
+                setMoveDropTargetKey(null);
+              }
+              else {
+                setMoveDropTargetKey(item.key);
+                setReorderDropTargetKey(null);
+              }
             }}
             onDragLeave={(e) => {
               const related = e.relatedTarget as HTMLElement | null;
@@ -2119,28 +2135,28 @@ export default function MaterialPackageNavPanel({
               const source = getMaterialPackageReorderDragData(e.dataTransfer);
               if (!source)
                 return;
-              if (Number(source.packageId) !== Number(item.payload.packageId))
-                return;
 
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               const localY = e.clientY - rect.top;
               const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
-              if (isBeforeZone) {
-                e.preventDefault();
-                e.stopPropagation();
-                setReorderDropTargetKey(null);
-                setMoveDropTargetKey(null);
+              const sourceFolderNames = payloadPathToFolderNames(source.path);
+              const sourceParent = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+              const sameParent = sourceParent.length === parentFolderPath.length
+                && sourceParent.every((name, idx) => parentFolderPath[idx] === name);
+              const samePackage = Number(source.packageId) === Number(item.payload.packageId);
+              const decision = computeTreeFolderRowDropDecision({ samePackage, sameParent, isBeforeZone });
+
+              e.preventDefault();
+              e.stopPropagation();
+              setReorderDropTargetKey(null);
+              setMoveDropTargetKey(null);
+              if (decision === "reorder") {
                 void reorderNode({
                   source,
                   dest: { packageId: Number(item.payload.packageId), folderPath: parentFolderPath, insertBefore: { type: "folder", name: item.name } },
                 });
                 return;
               }
-
-              e.preventDefault();
-              e.stopPropagation();
-              setReorderDropTargetKey(null);
-              setMoveDropTargetKey(null);
               void moveNode({ source, dest: { packageId: Number(item.payload.packageId), folderPath } });
             }}
             onDragEnd={() => {

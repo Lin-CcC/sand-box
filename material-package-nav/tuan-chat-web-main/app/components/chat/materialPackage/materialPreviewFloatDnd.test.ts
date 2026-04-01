@@ -33,12 +33,22 @@ describe("materialPreviewFloatDnd", () => {
     })).toBe("moveInto");
   });
 
-  test("list: middle on folder but not on icon area -> reorderAfter", () => {
+  test("list: middle on folder within thumbnail hot area -> moveInto", () => {
     expect(computeMpfDropIntent({
       viewMode: "list",
       targetKind: "folder",
       targetRect: { left: 0, top: 0, width: 100, height: 100 },
       clientX: 80,
+      clientY: 50,
+    })).toBe("moveInto");
+  });
+
+  test("list: middle on folder but outside hot area -> reorderAfter", () => {
+    expect(computeMpfDropIntent({
+      viewMode: "list",
+      targetKind: "folder",
+      targetRect: { left: 0, top: 0, width: 100, height: 100 },
+      clientX: 95,
       clientY: 50,
     })).toBe("reorderAfter");
   });

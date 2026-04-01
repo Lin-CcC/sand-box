@@ -22,7 +22,9 @@ export function computeMpfDropIntent(args: {
       return "reorderAfter";
 
     const localX = args.clientX - rect.left;
-    const intoHotX = Math.min(44, rect.width * 0.25);
+    // 列表视图：仅当拖到左侧“缩略图/图标区”才算移入文件夹（避免看起来像“移动”却被吞并）。
+    // 判定区按行高近似一个方形，尽量贴合 UI：宽度≈height，且不超过行宽。
+    const intoHotX = Math.min(rect.height + 16, rect.width - 12);
     if (args.targetKind === "folder" && localX <= intoHotX)
       return "moveInto";
 
