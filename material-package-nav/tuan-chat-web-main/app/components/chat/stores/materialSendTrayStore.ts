@@ -14,6 +14,8 @@ type MaterialSendTrayState = {
   close: () => void;
   toggle: () => void;
   enqueue: (payload: MaterialPreviewPayload) => void;
+  enqueueMany: (payloads: MaterialPreviewPayload[]) => void;
+  replace: (payloads: MaterialPreviewPayload[]) => void;
   remove: (id: string) => void;
   clear: () => void;
 };
@@ -32,7 +34,17 @@ export const useMaterialSendTrayStore = create<MaterialSendTrayState>(set => ({
     isOpen: true,
     items: [...prev.items, { id: generateId(), payload }],
   })),
+  enqueueMany: (payloads) => set(prev => ({
+    isOpen: true,
+    items: [
+      ...prev.items,
+      ...(Array.isArray(payloads) ? payloads.filter(Boolean).map(payload => ({ id: generateId(), payload })) : []),
+    ],
+  })),
+  replace: (payloads) => set({
+    isOpen: true,
+    items: Array.isArray(payloads) ? payloads.filter(Boolean).map(payload => ({ id: generateId(), payload })) : [],
+  }),
   remove: (id) => set(prev => ({ items: prev.items.filter(x => x.id !== id) })),
   clear: () => set({ items: [] }),
 }));
-
