@@ -27,6 +27,10 @@ interface MaterialPackageSquareViewProps {
     description?: string | null;
   }>;
   onSelectSpace?: (spaceId: number) => void;
+  /** 外部希望打开的作者（例如从作品页进入查看某人的素材包） */
+  initialAuthorUserId?: number | null;
+  /** 外部希望直接打开详情的素材包 ID（例如从作品页点击某个素材包卡片） */
+  initialPackageId?: number | null;
   /** 若指定，则导入时不再弹“选择空间”而直接导入到该 spaceId */
   forcedImportSpaceId?: number | null;
   onImportedToSpace?: (payload: { spaceId: number; packageId: number }) => void;
@@ -62,6 +66,8 @@ export default function MaterialPackageSquareView({
   activeSpaceId,
   onSelectSpace,
   spaces,
+  initialAuthorUserId,
+  initialPackageId,
   forcedImportSpaceId,
   onImportedToSpace,
 }: MaterialPackageSquareViewProps) {
@@ -112,6 +118,26 @@ export default function MaterialPackageSquareView({
     null,
   );
   const isAuthorPage = isValidId(activeAuthorUserId);
+
+  const focusConsumedRef = React.useRef<string | null>(null);
+  useEffect(() => {
+    const authorId = isValidId(initialAuthorUserId)
+      ? initialAuthorUserId
+      : null;
+    const packageId = isValidId(initialPackageId) ? initialPackageId : null;
+    if (!authorId && !packageId) return;
+
+    const key = `${authorId ?? ""}:${packageId ?? ""}`;
+    if (focusConsumedRef.current === key) return;
+    focusConsumedRef.current = key;
+
+    if (authorId) {
+      setActiveAuthorUserId(authorId);
+    }
+    if (packageId) {
+      setSelectedPackageId(packageId);
+    }
+  }, [initialAuthorUserId, initialPackageId]);
 
   const authorPackagesQuery = useQuery({
     enabled: useBackend && isValidId(activeAuthorUserId),

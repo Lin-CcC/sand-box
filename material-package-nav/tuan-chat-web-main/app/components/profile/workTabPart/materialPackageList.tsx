@@ -121,13 +121,16 @@ const UserMaterialPackagesList: React.FC<UserMaterialPackagesListProps> = ({
             createTime={pkg.createTime}
             onClick={() => {
               // 目前没有单独的“素材包详情”路由；先复用现有素材包页面入口。
-              navigate("/chat/material-package", {
-                state: {
-                  from: "profileWorks",
-                  packageId: pkg.packageId,
-                  userId,
+              navigate(
+                `/chat/material-package?from=profileWorks&authorUserId=${encodeURIComponent(String(userId))}&packageId=${encodeURIComponent(String(pkg.packageId))}`,
+                {
+                  state: {
+                    from: "profileWorks",
+                    packageId: pkg.packageId,
+                    userId,
+                  },
                 },
-              });
+              );
             }}
           />
         ))}
