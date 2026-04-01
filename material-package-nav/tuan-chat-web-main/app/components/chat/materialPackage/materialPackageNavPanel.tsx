@@ -23,7 +23,7 @@ import { applyVisibilityToSquare, removeSquareRecord } from "@/components/chat/m
 import type { SelectedExplorerNode } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { autoRenameVsCodeLike, payloadPathToFolderNames, resolveTarget } from "@/components/chat/materialPackage/materialPackageExplorerOps";
 import { getFolderNodesAtPath } from "@/components/chat/materialPackage/materialPackageTree";
-import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
+import { buildEmptyMaterialPackageContent, draftCreateFolder, draftCreateMaterial, draftDeleteFolder, draftDeleteMaterial, draftMoveNode, draftRenameFolder, draftRenameMaterial, draftReorderNode, draftReplaceMaterialMessages } from "@/components/chat/materialPackage/materialPackageDraft";
 import { getVisibilityCopy, normalizePackageVisibility } from "@/components/chat/materialPackage/materialPackageVisibility";
 import {
   isMaterialPreviewDrag,
@@ -329,6 +329,7 @@ export default function MaterialPackageNavPanel({
   const [defaultTargetPackageId, setDefaultTargetPackageId] = useState<number | null>(null);
   const [collapsedByKey, setCollapsedByKey] = useState<Record<ExplorerNodeKey, boolean>>({});
   const [reorderDropTargetKey, setReorderDropTargetKey] = useState<string | null>(null);
+  const [moveDropTargetKey, setMoveDropTargetKey] = useState<string | null>(null);
   const toggleCollapsed = useCallback((key: ExplorerNodeKey) => {
     setCollapsedByKey(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
@@ -531,6 +532,108 @@ export default function MaterialPackageNavPanel({
     }
     catch (error) {
       const message = error instanceof Error ? error.message : "排序失败";
+      toast.error(message, { id: toastId });
+    }
+  }, [findPackageById, savePackageContent]);
+
+  const moveNode = useCallback(async (args: {
+    source: MaterialPackageReorderPayload;
+    dest: { packageId: number; folderPath: string[] };
+  }) => {
+    const { source, dest } = args;
+    const packageId = Number(source.packageId);
+    if (!Number.isFinite(packageId) || packageId <= 0)
+      return;
+    if (Number(dest.packageId) !== packageId) {
+      toast.error("当前仅支持同一素材箱内移动。");
+      return;
+    }
+
+    const pkg = findPackageById(packageId);
+    if (!pkg) {
+      toast.error("目标素材箱不存在或已被刷新。");
+      return;
+    }
+    const baseContent = pkg.content ?? buildEmptyMaterialPackageContent();
+
+    const sourceFolderNames = payloadPathToFolderNames(source.path);
+    const sourceName = source.kind === "folder"
+      ? (sourceFolderNames[sourceFolderNames.length - 1] ?? "")
+      : (payloadPathToMaterialName(source.path) ?? "");
+    if (!sourceName)
+      return;
+
+    const sourceParentPath = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+    const destFolderPath = Array.isArray(dest.folderPath) ? dest.folderPath : [];
+
+    if (source.kind === "folder") {
+      const fromPath = sourceFolderNames;
+      const isDescendant = destFolderPath.length >= fromPath.length
+        && fromPath.every((name, idx) => destFolderPath[idx] === name);
+      if (isDescendant) {
+        toast.error("不能将文件夹移动到自身或其子目录中。");
+        return;
+      }
+    }
+
+    const toastId = `material-package-move:${packageId}:${source.kind}:${sourceName}`;
+    toast.loading("正在移动…", { id: toastId });
+    try {
+      const destSiblings = getFolderNodesAtPath(baseContent, destFolderPath);
+      const usedNames = destSiblings.map(n => n.name);
+      const finalName = autoRenameVsCodeLike(sourceName, usedNames);
+      if (finalName !== sourceName) {
+        window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+      }
+
+      const nextContent = draftMoveNode(
+        baseContent,
+        { parentPath: sourceParentPath, source: { type: source.kind, name: sourceName }, nextName: finalName !== sourceName ? finalName : undefined },
+        { folderPath: destFolderPath },
+      );
+      await savePackageContent({ packageId, nextContent });
+
+      const path = [
+        ...destFolderPath.map(n => `folder:${n}`),
+        source.kind === "folder" ? `folder:${finalName}` : `material:${finalName}`,
+      ];
+      const payload = toPreviewPayload({ kind: source.kind, packageId, label: finalName, path });
+      const key = buildNodeKey({ packageId, path });
+      setSelectedNode({ kind: source.kind, key, payload });
+
+      const keysToExpand: string[] = [];
+      keysToExpand.push(`root:${packageId}`);
+      for (let i = 0; i < path.length; i++) {
+        const part = path[i];
+        if (typeof part !== "string" || !part.startsWith("folder:"))
+          continue;
+        keysToExpand.push(buildNodeKey({ packageId, path: path.slice(0, i + 1) }));
+      }
+
+      setCollapsedByKey((prev) => {
+        let changed = false;
+        const next: Record<string, boolean> = { ...prev };
+        for (const k of keysToExpand) {
+          if (next[k] === true) {
+            next[k] = false;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const root = treeItemsRef.current;
+          const el = root?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(key)}"]`);
+          el?.scrollIntoView({ block: "nearest" });
+        });
+      });
+
+      toast.success("已移动", { id: toastId });
+    }
+    catch (error) {
+      const message = error instanceof Error ? error.message : "移动失败";
       toast.error(message, { id: toastId });
     }
   }, [findPackageById, savePackageContent]);
@@ -1773,6 +1876,7 @@ export default function MaterialPackageNavPanel({
       const isSelected = selectedNode?.key === item.key;
       const isEditingName = inlineRename?.key === item.key;
       const isReorderDropTarget = reorderDropTargetKey === item.key;
+      const isMoveDropTarget = moveDropTargetKey === item.key;
       const folderPath = payloadPathToFolderNames(item.payload.path);
       const parentFolderPath = folderPath.slice(0, -1);
       return (
@@ -1783,7 +1887,7 @@ export default function MaterialPackageNavPanel({
           data-base-index={item.baseIndex}
         >
           <div
-            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
+            className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-85 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isMoveDropTarget ? "ring-1 ring-info/40 bg-info/10" : ""} ${isReorderDropTarget ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""}`}
             style={{ paddingLeft: `${item.depth + 2}px` }}
             draggable
             onDragStart={(e) => {
@@ -1806,26 +1910,34 @@ export default function MaterialPackageNavPanel({
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               const localY = e.clientY - rect.top;
               const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
-              if (!isBeforeZone)
-                return;
+              if (isBeforeZone) {
+                const sourceFolderNames = payloadPathToFolderNames(source.path);
+                const sourceParent = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
+                const sameParent = sourceParent.length === parentFolderPath.length
+                  && sourceParent.every((name, idx) => parentFolderPath[idx] === name);
+                if (!sameParent)
+                  return;
 
-              const sourceFolderNames = payloadPathToFolderNames(source.path);
-              const sourceParent = source.kind === "folder" ? sourceFolderNames.slice(0, -1) : sourceFolderNames;
-              const sameParent = sourceParent.length === parentFolderPath.length
-                && sourceParent.every((name, idx) => parentFolderPath[idx] === name);
-              if (!sameParent)
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                setReorderDropTargetKey(item.key);
+                setMoveDropTargetKey(null);
                 return;
+              }
 
               e.preventDefault();
               e.stopPropagation();
               e.dataTransfer.dropEffect = "move";
-              setReorderDropTargetKey(item.key);
+              setMoveDropTargetKey(item.key);
+              setReorderDropTargetKey(null);
             }}
             onDragLeave={(e) => {
               const related = e.relatedTarget as HTMLElement | null;
               if (related && (e.currentTarget as HTMLElement).contains(related))
                 return;
               setReorderDropTargetKey(prev => (prev === item.key ? null : prev));
+              setMoveDropTargetKey(prev => (prev === item.key ? null : prev));
             }}
             onDrop={(e) => {
               const source = getMaterialPackageReorderDragData(e.dataTransfer);
@@ -1837,20 +1949,28 @@ export default function MaterialPackageNavPanel({
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               const localY = e.clientY - rect.top;
               const isBeforeZone = localY <= Math.min(10, rect.height * 0.35);
-              if (!isBeforeZone)
+              if (isBeforeZone) {
+                e.preventDefault();
+                e.stopPropagation();
+                setReorderDropTargetKey(null);
+                setMoveDropTargetKey(null);
+                void reorderNode({
+                  source,
+                  dest: { packageId: Number(item.payload.packageId), folderPath: parentFolderPath, insertBefore: { type: "folder", name: item.name } },
+                });
                 return;
+              }
 
               e.preventDefault();
               e.stopPropagation();
               setReorderDropTargetKey(null);
-              void reorderNode({
-                source,
-                dest: { packageId: Number(item.payload.packageId), folderPath: parentFolderPath, insertBefore: { type: "folder", name: item.name } },
-              });
+              setMoveDropTargetKey(null);
+              void moveNode({ source, dest: { packageId: Number(item.payload.packageId), folderPath } });
             }}
             onDragEnd={() => {
               activeMaterialPackageReorderDrag = null;
               setReorderDropTargetKey(null);
+              setMoveDropTargetKey(null);
             }}
             onClick={(e) => {
               setSelectedNode({ kind: "folder", key: item.key, payload: item.payload });
@@ -1974,6 +2094,7 @@ export default function MaterialPackageNavPanel({
           e.stopPropagation();
           e.dataTransfer.dropEffect = "move";
           setReorderDropTargetKey(item.key);
+          setMoveDropTargetKey(null);
         }}
         onDragLeave={(e) => {
           const related = e.relatedTarget as HTMLElement | null;
@@ -2005,6 +2126,7 @@ export default function MaterialPackageNavPanel({
         onDragEnd={() => {
           activeMaterialPackageReorderDrag = null;
           setReorderDropTargetKey(null);
+          setMoveDropTargetKey(null);
         }}
         onClick={(e) => {
           setSelectedNode({ kind: "material", key: item.key, payload: item.payload });
@@ -2069,7 +2191,7 @@ export default function MaterialPackageNavPanel({
         )}
       </div>
     );
-  }, [closeInlineRename, commitInlineRename, dockedPreview, findPackageById, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, maybeTriggerByDoubleClick, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, reorderDropTargetKey, reorderNode, resolvedDockIndex, selectedNode?.key, setReorderDropTargetKey, startInlineRename, toggleCollapsed, visibilityEditor?.packageId]);
+  }, [closeInlineRename, commitInlineRename, dockedPreview, findPackageById, inlineRename?.draft, inlineRename?.key, inlineRename?.saving, maybeTriggerByDoubleClick, moveDropTargetKey, moveNode, onDockPreview, onOpenPreview, onUndockPreview, openPreview, openVisibilityEditor, reorderDropTargetKey, reorderNode, resolvedDockIndex, selectedNode?.key, setMoveDropTargetKey, setReorderDropTargetKey, startInlineRename, toggleCollapsed, visibilityEditor?.packageId]);
 
   return (
     <div
