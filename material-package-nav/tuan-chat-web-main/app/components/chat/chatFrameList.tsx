@@ -218,10 +218,7 @@ function useChatFrameListDragHandlers(roomId: number): DragHandlers {
             return;
           }
           const requests = materialMessagesToChatRequests(roomId, messages);
-          for (const req of requests) {
-            // eslint-disable-next-line no-await-in-loop
-            await tuanchat.chatController.sendMessage1(req);
-          }
+          await tuanchat.chatController.batchSendMessages(requests);
           toast.success(`已发送 ${requests.length} 条消息`, { id: loadingId });
         }
         catch (error) {
