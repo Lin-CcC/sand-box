@@ -5,7 +5,14 @@ import type { DraggingItem, DropTarget } from "./useRoomSidebarDragState";
 import toast from "react-hot-toast";
 import RoomButton from "@/components/chat/shared/components/roomButton";
 import { getMaterialPreviewDragData, isMaterialPreviewDrag } from "@/components/chat/materialPackage/materialPackageDnd";
-import { materialMessagesToChatRequests, resolveMaterialMessagesFromPayload } from "@/components/chat/materialPackage/materialPackageSendUtils";
+import { getMaterialBatchDragData, isMaterialBatchDrag } from "@/components/chat/materialPackage/materialPackageDndBatch";
+import { useMaterialSendTrayStore } from "@/components/chat/stores/materialSendTrayStore";
+import {
+  materialMessagesToChatRequests,
+  resolveMaterialMessageCountFromPayload,
+  resolveMaterialMessagesFromPayload,
+  resolveMaterialPayloadsFromPayload,
+} from "@/components/chat/materialPackage/materialPackageSendUtils";
 import { setRoomRefDragData } from "@/components/chat/utils/roomRef";
 import { setSubWindowDragPayload } from "@/components/chat/utils/subWindowDragPayload";
 import { getMaterialPackage, getSpaceMaterialPackage } from "@/components/materialPackage/materialPackageApi";
@@ -79,6 +86,17 @@ export default function RoomSidebarRoomItem({
       const pkg = payload.scope === "space"
         ? await getSpaceMaterialPackage(payload.packageId)
         : await getMaterialPackage(payload.packageId);
+
+      if (payload.kind === "folder") {
+        const messagesTotal = resolveMaterialMessageCountFromPayload(pkg?.content, payload);
+        if (messagesTotal > 10) {
+          const items = resolveMaterialPayloadsFromPayload(pkg?.content, payload);
+          useMaterialSendTrayStore.getState().replace(items);
+          window.dispatchEvent(new CustomEvent("tc:material-send-tray:set-target-room", { detail: { roomId } }));
+          toast(`素材较多（${messagesTotal}条），已加入发送队列。`, { id: loadingId });
+          return;
+        }
+      }
       const messages = resolveMaterialMessagesFromPayload(pkg?.content, payload);
       if (!messages.length) {
         toast("该素材没有可发送的消息。", { id: loadingId });
@@ -86,7 +104,10 @@ export default function RoomSidebarRoomItem({
       }
 
       const requests = materialMessagesToChatRequests(roomId, messages);
-      await tuanchat.chatController.batchSendMessages(requests);
+      for (const req of requests) {
+        // eslint-disable-next-line no-await-in-loop
+        await tuanchat.chatController.sendMessage1(req);
+      }
       toast.success(`已发送 ${requests.length} 条消息`, { id: loadingId });
     }
     catch (error) {
@@ -142,6 +163,12 @@ export default function RoomSidebarRoomItem({
         onContextMenu(e);
       }}
       onDragOver={(e) => {
+        if (isMaterialBatchDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "copy";
+          return;
+        }
         if (isMaterialPreviewDrag(e.dataTransfer)) {
           e.preventDefault();
           e.stopPropagation();
@@ -159,6 +186,17 @@ export default function RoomSidebarRoomItem({
         setDropTarget({ kind: "node", toCategoryId: categoryId, insertIndex: isBefore ? index : index + 1 });
       }}
       onDrop={(e) => {
+        if (isMaterialBatchDrag(e.dataTransfer)) {
+          e.preventDefault();
+          e.stopPropagation();
+          const batch = getMaterialBatchDragData(e.dataTransfer);
+          if (!batch?.items?.length)
+            return;
+          useMaterialSendTrayStore.getState().replace(batch.items);
+          window.dispatchEvent(new CustomEvent("tc:material-send-tray:set-target-room", { detail: { roomId } }));
+          toast.success(`已加入发送队列（${batch.items.length}项）`);
+          return;
+        }
         if (isMaterialPreviewDrag(e.dataTransfer)) {
           e.preventDefault();
           e.stopPropagation();

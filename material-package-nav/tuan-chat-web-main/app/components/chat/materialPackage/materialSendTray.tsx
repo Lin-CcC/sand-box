@@ -98,6 +98,18 @@ export default function MaterialSendTray() {
     setTargetRoomBySpace(prev => ({ ...prev, [String(spaceId)]: targetRoomId }));
   }, [setTargetRoomBySpace, spaceId, targetRoomId]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId?: number }>)?.detail;
+      const nextRoomId = Number(detail?.roomId ?? -1);
+      if (!Number.isFinite(nextRoomId) || nextRoomId <= 0)
+        return;
+      setTargetRoomId(prev => (prev === nextRoomId ? prev : nextRoomId));
+    };
+    window.addEventListener("tc:material-send-tray:set-target-room", handler as EventListener);
+    return () => window.removeEventListener("tc:material-send-tray:set-target-room", handler as EventListener);
+  }, []);
+
   const summary = useMemo(() => {
     if (!items.length)
       return "空";
@@ -150,7 +162,10 @@ export default function MaterialSendTray() {
         }
       }
       else {
-        await tuanchat.chatController.batchSendMessages(requests);
+        for (const req of requests) {
+          // eslint-disable-next-line no-await-in-loop
+          await tuanchat.chatController.sendMessage1(req);
+        }
       }
 
       toast.success(`已发送 ${requests.length} 条消息`, { id: toastId });
