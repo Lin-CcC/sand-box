@@ -9,6 +9,7 @@ import {
   draftDeleteMaterial,
   draftRenameFolder,
   draftRenameMaterial,
+  draftReorderNode,
   draftReplaceMaterialMessages,
 } from "@/components/chat/materialPackage/materialPackageDraft";
 
@@ -102,6 +103,60 @@ describe("materialPackageDraft", () => {
     expect(folder.children[0]).toMatchObject({ type: "material", name: "a.png", note: "旧备注" });
     expect(folder.children[0].messages?.[0]?.extra?.imageMessage?.url).toBe("new");
     expect(folder.children[1]).toMatchObject({ type: "material", name: "b.png" });
+  });
+
+  it("支持同一文件夹内重排素材顺序", () => {
+    const base: MaterialPackageContent = {
+      version: 1,
+      root: [
+        {
+          type: "folder",
+          name: "场景",
+          children: [
+            { type: "material", name: "A", note: "", messages: [] },
+            { type: "material", name: "B", note: "", messages: [] },
+            { type: "material", name: "C", note: "", messages: [] },
+          ],
+        },
+      ],
+    };
+
+    const next = draftReorderNode(
+      base,
+      ["场景"],
+      { type: "material", name: "C" },
+      { insertBefore: { type: "material", name: "A" } },
+    );
+
+    const folder = next.root[0] as any;
+    expect(folder.children.map((n: any) => n.name)).toEqual(["C", "A", "B"]);
+  });
+
+  it("支持同一文件夹内重排文件夹与素材混排顺序", () => {
+    const base: MaterialPackageContent = {
+      version: 1,
+      root: [
+        {
+          type: "folder",
+          name: "场景",
+          children: [
+            { type: "folder", name: "F1", children: [] },
+            { type: "material", name: "M1", note: "", messages: [] },
+            { type: "folder", name: "F2", children: [] },
+          ],
+        },
+      ],
+    };
+
+    const next = draftReorderNode(
+      base,
+      ["场景"],
+      { type: "folder", name: "F2" },
+      { insertBefore: { type: "folder", name: "F1" } },
+    );
+
+    const folder = next.root[0] as any;
+    expect(folder.children.map((n: any) => `${n.type}:${n.name}`)).toEqual(["folder:F2", "folder:F1", "material:M1"]);
   });
 });
 

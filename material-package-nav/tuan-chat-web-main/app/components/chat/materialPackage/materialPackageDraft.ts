@@ -192,6 +192,38 @@ export function draftUpdateMaterialAnnotations(
   return updateContentAtPath(content, folderPath, nodes => updateMaterialAnnotationsByName(nodes, name, nextAnnotations, applyToAll));
 }
 
+type DraftNodeRef = { type: "folder" | "material"; name: string };
+
+function reorderNodeByName(nodes: MaterialNode[], source: DraftNodeRef, insertBefore?: DraftNodeRef | null): MaterialNode[] {
+  const fromName = source.name.trim();
+  if (!fromName)
+    return nodes;
+
+  const fromIndex = nodes.findIndex(n => n.type === source.type && n.name === fromName);
+  if (fromIndex < 0)
+    return nodes;
+
+  let toIndex = nodes.length;
+  if (insertBefore) {
+    const beforeName = insertBefore.name.trim();
+    if (!beforeName)
+      return nodes;
+    const beforeIndex = nodes.findIndex(n => n.type === insertBefore.type && n.name === beforeName);
+    if (beforeIndex < 0)
+      return nodes;
+    toIndex = beforeIndex;
+  }
+
+  if (toIndex === fromIndex)
+    return nodes;
+
+  const next = nodes.slice();
+  const [moved] = next.splice(fromIndex, 1);
+  const normalizedToIndex = fromIndex < toIndex ? Math.max(0, toIndex - 1) : Math.max(0, toIndex);
+  next.splice(Math.min(normalizedToIndex, next.length), 0, moved as MaterialNode);
+  return next;
+}
+
 export function draftReplaceMaterialMessages(
   content: MaterialPackageContent,
   folderPath: string[],
@@ -219,6 +251,16 @@ export function draftReplaceMaterialMessages(
   });
 
   return changed ? next : content;
+}
+
+export function draftReorderNode(
+  content: MaterialPackageContent,
+  folderPath: string[],
+  source: DraftNodeRef,
+  options: { insertBefore?: DraftNodeRef | null },
+): MaterialPackageContent {
+  const insertBefore = options?.insertBefore ?? undefined;
+  return updateContentAtPath(content, folderPath, nodes => reorderNodeByName(nodes, source, insertBefore));
 }
 
 export function buildEmptyMaterialPackageContent(): MaterialPackageContent {
