@@ -62,6 +62,37 @@ function findFolder(nodes: MaterialNode[], folderName: string): MaterialFolderNo
   return null;
 }
 
+function collectMaterialPayloads(
+  nodes: MaterialNode[],
+  basePayload: MaterialPreviewPayload,
+  folderPathTokens: string[],
+): MaterialPreviewPayload[] {
+  const list: MaterialPreviewPayload[] = [];
+  for (const node of nodes) {
+    if (!node)
+      continue;
+    if (node.type === "material") {
+      list.push({
+        ...(basePayload.scope ? { scope: basePayload.scope } : {}),
+        ...(basePayload.spaceId ? { spaceId: basePayload.spaceId } : {}),
+        kind: "material",
+        packageId: basePayload.packageId,
+        label: node.name,
+        path: [...folderPathTokens, `material:${node.name}`],
+      });
+      continue;
+    }
+    if (node.type === "folder") {
+      list.push(...collectMaterialPayloads(
+        Array.isArray(node.children) ? node.children : [],
+        basePayload,
+        [...folderPathTokens, `folder:${node.name}`],
+      ));
+    }
+  }
+  return list;
+}
+
 export function resolveMaterialMessagesFromPayload(
   content: MaterialPackageContent | null | undefined,
   payload: MaterialPreviewPayload | null | undefined,
@@ -111,6 +142,55 @@ export function resolveMaterialMessagesFromPayload(
   return msgs.filter(Boolean) as MaterialMessageItem[];
 }
 
+export function resolveMaterialPayloadsFromPayload(
+  content: MaterialPackageContent | null | undefined,
+  payload: MaterialPreviewPayload | null | undefined,
+): MaterialPreviewPayload[] {
+  if (!payload)
+    return [];
+
+  if (payload.kind === "material")
+    return [payload];
+
+  const root = Array.isArray(content?.root) ? content.root : [];
+  const tokens = parsePayloadPath(payload.path);
+
+  if (payload.kind === "package") {
+    return collectMaterialPayloads(root, payload, []);
+  }
+
+  let currentNodes: MaterialNode[] = root;
+  const folderTokens: string[] = [];
+  for (const token of tokens) {
+    if (token.type !== "folder")
+      break;
+    const folder = findFolder(currentNodes, token.name);
+    if (!folder)
+      return [];
+    folderTokens.push(`folder:${folder.name}`);
+    currentNodes = Array.isArray(folder.children) ? folder.children : [];
+  }
+
+  if (payload.kind === "folder") {
+    return collectMaterialPayloads(currentNodes, payload, folderTokens);
+  }
+
+  return [];
+}
+
+export function resolveMaterialMessageCountFromPayload(
+  content: MaterialPackageContent | null | undefined,
+  payload: MaterialPreviewPayload | null | undefined,
+): number {
+  const expanded = resolveMaterialPayloadsFromPayload(content, payload);
+  let total = 0;
+  for (const item of expanded) {
+    const msgs = resolveMaterialMessagesFromPayload(content, item);
+    total += msgs.length;
+  }
+  return total;
+}
+
 export function materialMessagesToChatRequests(roomId: number, messages: MaterialMessageItem[]): ChatMessageRequest[] {
   const list = Array.isArray(messages) ? messages : [];
   return list.map((m) => {
@@ -127,4 +207,3 @@ export function materialMessagesToChatRequests(roomId: number, messages: Materia
     };
   });
 }
-
