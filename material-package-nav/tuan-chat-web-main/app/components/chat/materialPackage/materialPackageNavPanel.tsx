@@ -2534,7 +2534,7 @@ export default function MaterialPackageNavPanel({
       {pendingChoosePackage ? (
         <dialog
           open
-          className="modal modal-open"
+          className="modal modal-open z-[10050]"
           onCancel={(event) => {
             event.preventDefault();
             setPendingChoosePackage(null);
@@ -2632,7 +2632,7 @@ export default function MaterialPackageNavPanel({
       {pendingDeleteDialog ? (
         <dialog
           open
-          className="modal modal-open"
+          className="modal modal-open z-[10050]"
           onCancel={(event) => {
             event.preventDefault();
             if (pendingDeleteDialog.saving)
@@ -2802,7 +2802,7 @@ export default function MaterialPackageNavPanel({
       {pendingImportDialog ? (
         <dialog
           open
-          className="modal modal-open"
+          className="modal modal-open z-[10050]"
           onCancel={(event) => {
             event.preventDefault();
             setPendingImportDialog(null);
