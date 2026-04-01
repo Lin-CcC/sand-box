@@ -85,6 +85,7 @@ import {
   listSpaceMaterialPackages,
   updateSpaceMaterialPackage,
 } from "@/components/materialPackage/materialPackageApi";
+import { UploadUtils } from "@/utils/UploadUtils";
 
 type SpaceMaterialLibraryPanelProps = {
   spaceId: number;
@@ -274,6 +275,86 @@ export function shouldCaptureSpaceMaterialDockZonePreviewDnd(
 ) {
   if (isSpaceMaterialMoveDrag(dataTransfer)) return false;
   return isMaterialPreviewDrag(dataTransfer);
+}
+
+export type SpaceMaterialLibraryUploadClient = Pick<
+  UploadUtils,
+  "uploadImg" | "uploadAudio"
+>;
+
+export async function buildSpaceMaterialMessagesFromFile(args: {
+  file: File;
+  useBackend: boolean;
+  uploadClient?: SpaceMaterialLibraryUploadClient;
+}) {
+  const file = args.file;
+  const useBackend = args.useBackend;
+  const type = String(file.type ?? "").toLowerCase();
+  const ext = String(file.name ?? "").toLowerCase();
+
+  const isImage =
+    type.startsWith("image/") || /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(ext);
+  const isAudio =
+    type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac|flac)$/.test(ext);
+  const isText =
+    type.startsWith("text/") || /\.(txt|md|json|yaml|yml|csv|log)$/.test(ext);
+
+  if (isImage) {
+    const url = useBackend
+      ? await args.uploadClient?.uploadImg(file, 4)
+      : URL.createObjectURL(file);
+    return [
+      {
+        messageType: 2,
+        annotations: ["图片"],
+        extra: {
+          imageMessage: {
+            url: url ?? "",
+            fileName: file.name,
+          },
+        },
+      },
+    ];
+  }
+
+  if (isAudio) {
+    const url = useBackend
+      ? await args.uploadClient?.uploadAudio(file, 4, 0)
+      : URL.createObjectURL(file);
+    return [
+      {
+        messageType: 3,
+        annotations: ["音频"],
+        extra: {
+          soundMessage: {
+            url: url ?? "",
+            fileName: file.name,
+          },
+        },
+      },
+    ];
+  }
+
+  if (isText) {
+    const text = await file.text().catch(() => "");
+    return [
+      {
+        messageType: 1,
+        content: text,
+        annotations: ["文本"],
+        extra: {},
+      },
+    ];
+  }
+
+  return [
+    {
+      messageType: 1,
+      content: file.name,
+      annotations: ["文件"],
+      extra: {},
+    },
+  ];
 }
 
 function tokenToName(token: string, prefix: "folder:" | "material:") {
@@ -776,6 +857,8 @@ export function SpaceMaterialLibraryCategory({
   canEdit,
 }: SpaceMaterialLibraryPanelProps) {
   const queryClient = useQueryClient();
+
+  const uploadUtilsRef = useRef(new UploadUtils());
 
   const defaultUseBackend = !(import.meta.env.MODE === "test");
   const [useBackend, setUseBackend] = useLocalStorage<boolean>(
@@ -2339,68 +2422,11 @@ export function SpaceMaterialLibraryCategory({
 
   const buildMessagesFromFile = useCallback(
     async (file: File) => {
-      const type = String(file.type ?? "").toLowerCase();
-      const ext = String(file.name ?? "").toLowerCase();
-
-      const isImage =
-        type.startsWith("image/") ||
-        /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/.test(ext);
-      const isAudio =
-        type.startsWith("audio/") || /\.(mp3|wav|ogg|m4a|aac|flac)$/.test(ext);
-      const isText =
-        type.startsWith("text/") ||
-        /\.(txt|md|json|yaml|yml|csv|log)$/.test(ext);
-
-      if (isImage) {
-        return [
-          {
-            messageType: 2,
-            annotations: ["图片"],
-            extra: {
-              imageMessage: {
-                url: useBackend ? "" : URL.createObjectURL(file),
-                fileName: file.name,
-              },
-            },
-          },
-        ];
-      }
-
-      if (isAudio) {
-        return [
-          {
-            messageType: 3,
-            annotations: ["音频"],
-            extra: {
-              soundMessage: {
-                url: useBackend ? "" : URL.createObjectURL(file),
-                fileName: file.name,
-              },
-            },
-          },
-        ];
-      }
-
-      if (isText) {
-        const text = await file.text().catch(() => "");
-        return [
-          {
-            messageType: 1,
-            content: text,
-            annotations: ["文本"],
-            extra: {},
-          },
-        ];
-      }
-
-      return [
-        {
-          messageType: 1,
-          content: file.name,
-          annotations: ["文件"],
-          extra: {},
-        },
-      ];
+      return await buildSpaceMaterialMessagesFromFile({
+        file,
+        useBackend,
+        uploadClient: useBackend ? uploadUtilsRef.current : undefined,
+      });
     },
     [useBackend],
   );
@@ -2415,73 +2441,106 @@ export function SpaceMaterialLibraryCategory({
         return;
       }
 
-      const baseContent = await loadPackageContent(args.target.packageId);
-      const nodes = getFolderNodesAtPath(baseContent, args.target.folderPath);
-      const existingNames = new Set(nodes.map((n) => String(n.name ?? "")));
-      const folderNames = new Set(
-        nodes
-          .filter((n) => n.type === "folder")
-          .map((n) => String(n.name ?? "")),
-      );
+      const total = Array.isArray(args.files) ? args.files.length : 0;
+      const toastId = `space-material-local-import:${args.target.packageId}`;
+      toast.loading("正在导入…", { id: toastId });
 
-      let nextContent = baseContent;
-      let lastKey: string | null = null;
-      let importedCount = 0;
-
-      for (const file of args.files) {
-        const baseName = String(file.name ?? "").trim();
-        if (!baseName) continue;
-
-        let finalName = baseName;
-        if (existingNames.has(finalName) || folderNames.has(finalName)) {
-          finalName = autoRenameVsCodeLike(finalName, existingNames);
-        }
-        existingNames.add(finalName);
-
-        const messages = await buildMessagesFromFile(file);
-        const material: MaterialItemNode = {
-          type: "material",
-          name: finalName,
-          note: "",
-          messages,
-        };
-        nextContent = draftCreateMaterial(
-          nextContent,
-          args.target.folderPath,
-          material,
+      try {
+        const baseContent = await loadPackageContent(args.target.packageId);
+        const nodes = getFolderNodesAtPath(baseContent, args.target.folderPath);
+        const existingNames = new Set(nodes.map((n) => String(n.name ?? "")));
+        const folderNames = new Set(
+          nodes
+            .filter((n) => n.type === "folder")
+            .map((n) => String(n.name ?? "")),
         );
 
-        const tokens = [
-          ...args.target.folderPath.map(makeFolderToken),
-          makeMaterialToken(finalName),
-        ];
-        lastKey = `material:${args.target.packageId}:${tokens.join("/")}`;
-        importedCount += 1;
+        let nextContent = baseContent;
+        let lastKey: string | null = null;
+        let importedCount = 0;
+        let failedCount = 0;
+        let processedCount = 0;
+
+        for (const file of args.files) {
+          processedCount += 1;
+          const label = String(file?.name ?? "").trim() || "(未命名文件)";
+          toast.loading(`正在导入… (${processedCount}/${total}) ${label}`, {
+            id: toastId,
+          });
+
+          const baseName = String(file.name ?? "").trim();
+          if (!baseName) {
+            failedCount += 1;
+            continue;
+          }
+
+          let finalName = baseName;
+          if (existingNames.has(finalName) || folderNames.has(finalName)) {
+            finalName = autoRenameVsCodeLike(finalName, existingNames);
+          }
+          existingNames.add(finalName);
+
+          try {
+            const messages = await buildMessagesFromFile(file);
+            const material: MaterialItemNode = {
+              type: "material",
+              name: finalName,
+              note: "",
+              messages,
+            };
+            nextContent = draftCreateMaterial(
+              nextContent,
+              args.target.folderPath,
+              material,
+            );
+
+            const tokens = [
+              ...args.target.folderPath.map(makeFolderToken),
+              makeMaterialToken(finalName),
+            ];
+            lastKey = `material:${args.target.packageId}:${tokens.join("/")}`;
+            importedCount += 1;
+          } catch (error) {
+            failedCount += 1;
+            const message = error instanceof Error ? error.message : "导入失败";
+            toast.error(`导入「${label}」失败：${message}`);
+          }
+        }
+
+        if (!importedCount) {
+          toast.error(failedCount ? "导入失败" : "没有可导入的文件。", {
+            id: toastId,
+          });
+          return;
+        }
+
+        await savePackageContent(args.target.packageId, nextContent);
+        ensureExpandedPackage(args.target.packageId);
+        setPendingLocalImportTarget(null);
+
+        if (lastKey) {
+          setSelectedNode({
+            kind: "material",
+            key: lastKey,
+            packageId: args.target.packageId,
+          });
+          setTimeout(() => {
+            document
+              .querySelector(`[data-node-key="${lastKey}"]`)
+              ?.scrollIntoView({ block: "nearest" });
+          }, 0);
+        }
+
+        toast.success(
+          failedCount
+            ? `已导入 ${importedCount} 个素材（失败 ${failedCount} 个）`
+            : `已导入 ${importedCount} 个素材`,
+          { id: toastId },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "导入失败";
+        toast.error(message, { id: toastId });
       }
-
-      if (!importedCount) {
-        toast("没有可导入的文件。", { icon: "ℹ️" });
-        return;
-      }
-
-      await savePackageContent(args.target.packageId, nextContent);
-      ensureExpandedPackage(args.target.packageId);
-      setPendingLocalImportTarget(null);
-
-      if (lastKey) {
-        setSelectedNode({
-          kind: "material",
-          key: lastKey,
-          packageId: args.target.packageId,
-        });
-        setTimeout(() => {
-          document
-            .querySelector(`[data-node-key="${lastKey}"]`)
-            ?.scrollIntoView({ block: "nearest" });
-        }, 0);
-      }
-
-      toast.success(`已导入 ${importedCount} 个素材`);
     },
     [buildMessagesFromFile, canEdit, loadPackageContent, savePackageContent],
   );
