@@ -569,6 +569,8 @@ export default function MaterialPackageNavPanel({
   const packageMetaPopoverRef = useRef<HTMLDivElement | null>(null);
   const packageMetaFirstInputRef = useRef<HTMLTextAreaElement | null>(null);
   const packageMetaCoverInputRef = useRef<HTMLInputElement | null>(null);
+  const coverDropCounterRef = useRef(0);
+  const [isCoverDropActive, setIsCoverDropActive] = useState(false);
   const [packageMetaPos, setPackageMetaPos] = useState<{
     left: number;
     top: number;
@@ -1112,6 +1114,110 @@ export default function MaterialPackageNavPanel({
     [uploadUtils],
   );
 
+  const resolveCoverUrlFromMaterialDrag = useCallback(
+    (dataTransfer: DataTransfer | null): string | null => {
+      const payload = getMaterialPreviewDragData(dataTransfer);
+      if (!payload || payload.kind !== "material") {
+        return null;
+      }
+      if (payload.scope === "space") {
+        return null;
+      }
+
+      const packageId = Number(payload.packageId);
+      const pkg = findPackageById(packageId);
+      if (!pkg) return null;
+
+      const folderPath = payloadPathToFolderNames(payload.path);
+      const materialName =
+        payloadPathToMaterialName(payload.path) ?? payload.label;
+      if (!materialName) return null;
+
+      const nodes = getFolderNodesAtPath(pkg.content, folderPath);
+      const material = nodes.find(
+        (n) =>
+          n &&
+          typeof n === "object" &&
+          (n as any).type === "material" &&
+          (n as any).name === materialName,
+      ) as MaterialItemNode | undefined;
+
+      if (!material) return null;
+      for (const msg of material.messages ?? []) {
+        if (!msg || typeof msg !== "object") continue;
+        if (Number((msg as any).messageType) !== 2) continue;
+        const extra: any = (msg as any).extra ?? null;
+        const imageMessage = extra?.imageMessage ?? extra;
+        const url =
+          typeof imageMessage?.url === "string" ? imageMessage.url : "";
+        if (url) return url;
+      }
+
+      return null;
+    },
+    [findPackageById],
+  );
+
+  const canAcceptCoverDrop = useCallback(
+    (dataTransfer: DataTransfer | null) => {
+      if (!dataTransfer) return false;
+
+      try {
+        const files = Array.from(dataTransfer.files ?? []);
+        if (
+          files.some(
+            (f) =>
+              f && typeof f.type === "string" && f.type.startsWith("image/"),
+          )
+        ) {
+          return true;
+        }
+      } catch {
+        // ignore
+      }
+
+      const previewPayload = getMaterialPreviewDragData(dataTransfer);
+      if (previewPayload?.kind === "material") {
+        return Boolean(resolveCoverUrlFromMaterialDrag(dataTransfer));
+      }
+
+      return false;
+    },
+    [resolveCoverUrlFromMaterialDrag],
+  );
+
+  const handleCoverDrop = useCallback(
+    (dataTransfer: DataTransfer | null) => {
+      if (!packageMetaEditor) return;
+      if (packageMetaEditor.saving || packageMetaEditor.uploadingCover) return;
+      if (!dataTransfer) return;
+
+      try {
+        const files = Array.from(dataTransfer.files ?? []);
+        const imageFile = files.find(
+          (f) => f && typeof f.type === "string" && f.type.startsWith("image/"),
+        );
+        if (imageFile) {
+          void uploadPackageCover(imageFile);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+
+      const draggedUrl = resolveCoverUrlFromMaterialDrag(dataTransfer);
+      if (!draggedUrl) {
+        toast.error("没有识别到可用的图片：请拖入图片文件或拖拽图片素材");
+        return;
+      }
+
+      setPackageMetaEditor((prev) =>
+        prev ? { ...prev, draftCoverUrl: draggedUrl } : prev,
+      );
+    },
+    [packageMetaEditor, resolveCoverUrlFromMaterialDrag, uploadPackageCover],
+  );
+
   useEffect(() => {
     if (!visibilityEditor?.anchor) return;
     setVisibilityPos(computeVisibilityPos(visibilityEditor.anchor));
@@ -1163,7 +1269,7 @@ export default function MaterialPackageNavPanel({
       }
     };
 
-    const onPointerDown = (e: MouseEvent) => {
+    const onClick = (e: MouseEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       const pop = packageMetaPopoverRef.current;
@@ -1177,10 +1283,10 @@ export default function MaterialPackageNavPanel({
     };
 
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("mousedown", onPointerDown, true);
+    window.addEventListener("click", onClick, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("mousedown", onPointerDown, true);
+      window.removeEventListener("click", onClick, true);
     };
   }, [closePackageMetaEditor, packageMetaEditor]);
 
@@ -4446,64 +4552,109 @@ export default function MaterialPackageNavPanel({
               </label>
 
               <label className="block">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs opacity-70">封面（可留空）</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      ref={packageMetaCoverInputRef}
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          void uploadPackageCover(file);
+                <div
+                  className={`rounded-md ${isCoverDropActive ? "ring-1 ring-info/40 bg-info/5" : ""}`}
+                  onDragEnter={(e) => {
+                    if (!canAcceptCoverDrop(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    coverDropCounterRef.current += 1;
+                    setIsCoverDropActive(true);
+                  }}
+                  onDragOver={(e) => {
+                    if (!canAcceptCoverDrop(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "copy";
+                    if (!isCoverDropActive) {
+                      setIsCoverDropActive(true);
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    if (!isCoverDropActive) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    coverDropCounterRef.current = Math.max(
+                      0,
+                      coverDropCounterRef.current - 1,
+                    );
+                    if (coverDropCounterRef.current === 0) {
+                      setIsCoverDropActive(false);
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (!canAcceptCoverDrop(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    coverDropCounterRef.current = 0;
+                    setIsCoverDropActive(false);
+                    handleCoverDrop(e.dataTransfer);
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-xs opacity-70">封面（可留空）</div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={packageMetaCoverInputRef}
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void uploadPackageCover(file);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs"
+                        disabled={
+                          packageMetaEditor.saving ||
+                          packageMetaEditor.uploadingCover
                         }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-xs"
-                      disabled={
-                        packageMetaEditor.saving ||
-                        packageMetaEditor.uploadingCover
-                      }
-                      onClick={() => packageMetaCoverInputRef.current?.click()}
-                    >
-                      {packageMetaEditor.uploadingCover
-                        ? "上传中…"
-                        : "上传图片"}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-xs"
-                      disabled={
-                        packageMetaEditor.saving ||
-                        packageMetaEditor.uploadingCover
-                      }
-                      onClick={() =>
-                        setPackageMetaEditor((prev) =>
-                          prev ? { ...prev, draftCoverUrl: "" } : prev,
-                        )
-                      }
-                    >
-                      清空
-                    </button>
+                        onClick={() =>
+                          packageMetaCoverInputRef.current?.click()
+                        }
+                      >
+                        {packageMetaEditor.uploadingCover
+                          ? "上传中…"
+                          : "上传图片"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs"
+                        disabled={
+                          packageMetaEditor.saving ||
+                          packageMetaEditor.uploadingCover
+                        }
+                        onClick={() =>
+                          setPackageMetaEditor((prev) =>
+                            prev ? { ...prev, draftCoverUrl: "" } : prev,
+                          )
+                        }
+                      >
+                        清空
+                      </button>
+                    </div>
                   </div>
+                  <input
+                    className="input input-bordered input-sm w-full mt-1"
+                    placeholder="https://..."
+                    value={packageMetaEditor.draftCoverUrl}
+                    onChange={(e) =>
+                      setPackageMetaEditor((prev) =>
+                        prev
+                          ? { ...prev, draftCoverUrl: e.target.value }
+                          : prev,
+                      )
+                    }
+                    disabled={
+                      packageMetaEditor.saving ||
+                      packageMetaEditor.uploadingCover
+                    }
+                  />
                 </div>
-                <input
-                  className="input input-bordered input-sm w-full mt-1"
-                  placeholder="https://..."
-                  value={packageMetaEditor.draftCoverUrl}
-                  onChange={(e) =>
-                    setPackageMetaEditor((prev) =>
-                      prev ? { ...prev, draftCoverUrl: e.target.value } : prev,
-                    )
-                  }
-                  disabled={
-                    packageMetaEditor.saving || packageMetaEditor.uploadingCover
-                  }
-                />
               </label>
             </div>
 
