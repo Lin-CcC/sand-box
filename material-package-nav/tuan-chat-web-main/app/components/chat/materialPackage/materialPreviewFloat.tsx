@@ -232,6 +232,8 @@ type MpfNodeDragPayload = {
   folderPath: string[];
   kind: "folder" | "material";
   name: string;
+  /** Optional: let chat decode a sendable payload from the same drag event. */
+  materialPreview?: MaterialPreviewPayload;
 };
 
 let activeMpfNodeDrag: MpfNodeDragPayload | null = null;
@@ -2803,12 +2805,38 @@ export default function MaterialPreviewFloat({
                         return;
                       }
                       activeMpfNodeDrag = null;
-                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.effectAllowed = "copyMove";
+
+                      const materialPreviewPayload: MaterialPreviewPayload = {
+                        ...(payload.scope ? { scope: payload.scope } : {}),
+                        ...(typeof payload.spaceId === "number" &&
+                        payload.spaceId > 0
+                          ? { spaceId: payload.spaceId }
+                          : {}),
+                        kind: node.type,
+                        packageId: selectedPackageId,
+                        label: name,
+                        path: [
+                          ...folderPath.map((n) => `folder:${n}`),
+                          node.type === "folder"
+                            ? `folder:${name}`
+                            : `material:${name}`,
+                        ],
+                      };
+                      setMaterialPreviewDragData(
+                        e.dataTransfer,
+                        materialPreviewPayload,
+                      );
+                      setMaterialPreviewDragOrigin(
+                        e.dataTransfer,
+                        dragOrigin === "docked" ? "docked" : "tree",
+                      );
                       setMpfNodeDragData(e.dataTransfer, {
                         packageId: selectedPackageId,
                         folderPath: [...folderPath],
                         kind: node.type,
                         name,
+                        materialPreview: materialPreviewPayload,
                       });
                       clearMpfDropTargets();
                     }}
@@ -3230,12 +3258,38 @@ export default function MaterialPreviewFloat({
                           return;
                         }
                         activeMpfNodeDrag = null;
-                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.effectAllowed = "copyMove";
+
+                        const materialPreviewPayload: MaterialPreviewPayload = {
+                          ...(payload.scope ? { scope: payload.scope } : {}),
+                          ...(typeof payload.spaceId === "number" &&
+                          payload.spaceId > 0
+                            ? { spaceId: payload.spaceId }
+                            : {}),
+                          kind: node.type,
+                          packageId: selectedPackageId,
+                          label: name,
+                          path: [
+                            ...folderPath.map((n) => `folder:${n}`),
+                            node.type === "folder"
+                              ? `folder:${name}`
+                              : `material:${name}`,
+                          ],
+                        };
+                        setMaterialPreviewDragData(
+                          e.dataTransfer,
+                          materialPreviewPayload,
+                        );
+                        setMaterialPreviewDragOrigin(
+                          e.dataTransfer,
+                          dragOrigin === "docked" ? "docked" : "tree",
+                        );
                         setMpfNodeDragData(e.dataTransfer, {
                           packageId: selectedPackageId,
                           folderPath: [...folderPath],
                           kind: node.type,
                           name,
+                          materialPreview: materialPreviewPayload,
                         });
                         clearMpfDropTargets();
                       }}

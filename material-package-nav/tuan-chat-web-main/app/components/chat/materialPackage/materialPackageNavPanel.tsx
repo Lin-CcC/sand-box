@@ -216,6 +216,11 @@ type MaterialPackageReorderPayload = {
   packageId: number;
   kind: "package" | "folder" | "material";
   path: string[];
+  /**
+   * Optional: embed a material-preview payload so other drop targets (e.g. chat)
+   * can decode it even if the runtime only preserves `text/plain`.
+   */
+  materialPreview?: MaterialPreviewPayload;
 };
 
 let activeMaterialPackageReorderDrag: MaterialPackageReorderPayload | null =
@@ -3497,6 +3502,7 @@ export default function MaterialPackageNavPanel({
                   packageId: Number(item.payload.packageId),
                   kind: "folder",
                   path: item.payload.path,
+                  materialPreview: item.payload,
                 });
               }}
               onDragOver={(e) => {
@@ -3726,6 +3732,7 @@ export default function MaterialPackageNavPanel({
               packageId: Number(item.payload.packageId),
               kind: "material",
               path: item.payload.path,
+              materialPreview: item.payload,
             });
           }}
           onDragOver={(e) => {
