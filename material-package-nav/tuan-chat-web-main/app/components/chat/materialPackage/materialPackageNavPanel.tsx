@@ -4410,7 +4410,9 @@ export default function MaterialPackageNavPanel({
                 className="btn btn-ghost btn-xs btn-square"
                 aria-label="关闭"
                 onClick={() => closePackageMetaEditor()}
-                disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+                disabled={
+                  packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                }
               >
                 ✕
               </button>
@@ -4463,17 +4465,21 @@ export default function MaterialPackageNavPanel({
                       type="button"
                       className="btn btn-ghost btn-xs"
                       disabled={
-                        packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                        packageMetaEditor.saving ||
+                        packageMetaEditor.uploadingCover
                       }
                       onClick={() => packageMetaCoverInputRef.current?.click()}
                     >
-                      {packageMetaEditor.uploadingCover ? "上传中…" : "上传图片"}
+                      {packageMetaEditor.uploadingCover
+                        ? "上传中…"
+                        : "上传图片"}
                     </button>
                     <button
                       type="button"
                       className="btn btn-ghost btn-xs"
                       disabled={
-                        packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                        packageMetaEditor.saving ||
+                        packageMetaEditor.uploadingCover
                       }
                       onClick={() =>
                         setPackageMetaEditor((prev) =>
@@ -4494,7 +4500,9 @@ export default function MaterialPackageNavPanel({
                       prev ? { ...prev, draftCoverUrl: e.target.value } : prev,
                     )
                   }
-                  disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+                  disabled={
+                    packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                  }
                 />
               </label>
             </div>
@@ -4504,7 +4512,9 @@ export default function MaterialPackageNavPanel({
                 type="button"
                 className="btn btn-ghost btn-sm"
                 onClick={() => closePackageMetaEditor()}
-                disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+                disabled={
+                  packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                }
               >
                 取消
               </button>
