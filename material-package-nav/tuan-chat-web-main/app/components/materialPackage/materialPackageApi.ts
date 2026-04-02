@@ -87,7 +87,7 @@ export type UpdateMaterialPackagePayload = {
   packageId: number;
   name?: string;
   description?: string;
-  coverUrl?: string;
+  coverUrl?: string | null;
   visibility?: MaterialPackageVisibility;
   content?: MaterialPackageContent;
 };
@@ -114,46 +114,41 @@ export type UpdateSpaceMaterialPackagePayload = {
 
 function normalizePath(path: string) {
   const normalized = path.trim();
-  if (!normalized)
-    return "/";
+  if (!normalized) return "/";
   return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
 
 function normalizeBase(base?: string) {
-  const trimmed = String(base || "").trim().replace(/\/+$/, "");
+  const trimmed = String(base || "")
+    .trim()
+    .replace(/\/+$/, "");
   return trimmed || undefined;
 }
 
 function resolveClientBaseUrl(client?: MaterialPackageApiClientOptions) {
   const explicitBase = normalizeBase(client?.base);
-  if (explicitBase)
-    return explicitBase;
+  if (explicitBase) return explicitBase;
 
   const envBase = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
   return normalizeBase(envBase);
 }
 
 function resolveClientToken(client?: MaterialPackageApiClientOptions) {
-  if (client?.includeToken === false)
-    return "";
-  if (typeof client?.token === "string")
-    return client.token;
+  if (client?.includeToken === false) return "";
+  if (typeof client?.token === "string") return client.token;
   return globalThis.localStorage?.getItem("token") || "";
 }
 
 function buildQueryString(query?: Record<string, unknown>) {
-  if (!query)
-    return "";
+  if (!query) return "";
 
   const params = new URLSearchParams();
   Object.entries(query).forEach(([key, value]) => {
-    if (value === undefined || value === null)
-      return;
+    if (value === undefined || value === null) return;
 
     if (Array.isArray(value)) {
       value.forEach((entry) => {
-        if (entry === undefined || entry === null)
-          return;
+        if (entry === undefined || entry === null) return;
         params.append(key, String(entry));
       });
       return;
@@ -172,13 +167,11 @@ function buildQueryString(query?: Record<string, unknown>) {
 }
 
 function canRetryWithoutApiSuffix(base: string) {
-  if (typeof window === "undefined")
-    return true;
+  if (typeof window === "undefined") return true;
   try {
     const baseOrigin = new URL(base, window.location.href).origin;
     return baseOrigin === window.location.origin;
-  }
-  catch {
+  } catch {
     return false;
   }
 }
@@ -195,7 +188,7 @@ async function requestMaterialPackageApi<T>(args: {
   const qs = buildQueryString(args.query);
 
   const headers = new Headers({
-    "Accept": "application/json",
+    Accept: "application/json",
   });
 
   const token = resolveClientToken(args.client);
@@ -216,10 +209,12 @@ async function requestMaterialPackageApi<T>(args: {
     body,
   };
 
-  const buildUrl = (baseUrl: string | undefined) => baseUrl ? `${baseUrl}${path}${qs}` : `${path}${qs}`;
+  const buildUrl = (baseUrl: string | undefined) =>
+    baseUrl ? `${baseUrl}${path}${qs}` : `${path}${qs}`;
 
   const formatNetworkError = (error: unknown, requestUrl: string) => {
-    const message = error instanceof Error ? error.message : String(error ?? "");
+    const message =
+      error instanceof Error ? error.message : String(error ?? "");
     const normalized = message.trim();
     if (normalized.toLowerCase().includes("failed to fetch")) {
       return `网络请求失败（可能被浏览器 CORS 拦截或网络不可达）：${requestUrl}`;
@@ -236,22 +231,23 @@ async function requestMaterialPackageApi<T>(args: {
     if (contentType.includes("application/json")) {
       try {
         const parsed = JSON.parse(text) as any;
-        const msg = typeof parsed?.errMsg === "string"
-          ? parsed.errMsg
-          : typeof parsed?.message === "string"
-            ? parsed.message
-            : "";
+        const msg =
+          typeof parsed?.errMsg === "string"
+            ? parsed.errMsg
+            : typeof parsed?.message === "string"
+              ? parsed.message
+              : "";
         if (msg && msg.trim()) {
           return `请求失败: ${res.status} ${res.statusText} - ${msg.trim()}`;
         }
-      }
-      catch {
+      } catch {
         // ignore
       }
     }
 
     const trimmed = String(text || "").trim();
-    const snippet = trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
+    const snippet =
+      trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed;
     return `请求失败: ${res.status} ${res.statusText}${snippet ? ` - ${snippet}` : ""}`;
   };
 
@@ -259,18 +255,22 @@ async function requestMaterialPackageApi<T>(args: {
   let res: Response;
   try {
     res = await fetch(url, requestInit);
-  }
-  catch (error) {
+  } catch (error) {
     throw new Error(formatNetworkError(error, url));
   }
 
-  if (!res.ok && res.status === 404 && base && /\/api$/i.test(base) && canRetryWithoutApiSuffix(base)) {
+  if (
+    !res.ok &&
+    res.status === 404 &&
+    base &&
+    /\/api$/i.test(base) &&
+    canRetryWithoutApiSuffix(base)
+  ) {
     const fallbackBase = base.replace(/\/api$/i, "");
     const fallbackUrl = buildUrl(fallbackBase || undefined);
     try {
       res = await fetch(fallbackUrl, requestInit);
-    }
-    catch (error) {
+    } catch (error) {
       throw new Error(formatNetworkError(error, fallbackUrl));
     }
   }
@@ -279,7 +279,9 @@ async function requestMaterialPackageApi<T>(args: {
     throw new Error(await formatError(res));
   }
 
-  const payload = await res.json().catch(() => null) as ApiResultLike<T> | null;
+  const payload = (await res
+    .json()
+    .catch(() => null)) as ApiResultLike<T> | null;
   if (!payload || typeof payload !== "object") {
     throw new Error("接口返回了无效响应");
   }
@@ -287,7 +289,10 @@ async function requestMaterialPackageApi<T>(args: {
   return payload;
 }
 
-export async function createMaterialPackage(payload: CreateMaterialPackagePayload, client?: MaterialPackageApiClientOptions) {
+export async function createMaterialPackage(
+  payload: CreateMaterialPackagePayload,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<MaterialPackageRecord>({
     method: "POST",
     path: "/materialPackage",
@@ -297,7 +302,10 @@ export async function createMaterialPackage(payload: CreateMaterialPackagePayloa
   return unwrapOpenApiResultData(response, "创建素材包失败");
 }
 
-export async function updateMaterialPackage(payload: UpdateMaterialPackagePayload, client?: MaterialPackageApiClientOptions) {
+export async function updateMaterialPackage(
+  payload: UpdateMaterialPackagePayload,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<MaterialPackageRecord>({
     method: "PUT",
     path: "/materialPackage",
@@ -307,7 +315,9 @@ export async function updateMaterialPackage(payload: UpdateMaterialPackagePayloa
   return unwrapOpenApiResultData(response, "更新素材包失败");
 }
 
-export async function getMyMaterialPackages(client?: MaterialPackageApiClientOptions) {
+export async function getMyMaterialPackages(
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<MaterialPackageRecord[]>({
     method: "GET",
     path: "/materialPackage/my",
@@ -316,7 +326,10 @@ export async function getMyMaterialPackages(client?: MaterialPackageApiClientOpt
   return unwrapOpenApiResultData(response, "获取我的素材包失败");
 }
 
-export async function getMaterialPackage(packageId: number, client?: MaterialPackageApiClientOptions) {
+export async function getMaterialPackage(
+  packageId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<MaterialPackageRecord>({
     method: "GET",
     path: `/materialPackage/${packageId}`,
@@ -325,7 +338,10 @@ export async function getMaterialPackage(packageId: number, client?: MaterialPac
   return unwrapOpenApiResultData(response, "获取素材包详情失败");
 }
 
-export async function deleteMaterialPackage(packageId: number, client?: MaterialPackageApiClientOptions) {
+export async function deleteMaterialPackage(
+  packageId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<Record<string, any>>({
     method: "DELETE",
     path: `/materialPackage/${packageId}`,
@@ -334,7 +350,10 @@ export async function deleteMaterialPackage(packageId: number, client?: Material
   return unwrapOpenApiResultData(response, "删除素材包失败");
 }
 
-export async function getMaterialPackageSquare(query?: Record<string, unknown>, client?: MaterialPackageApiClientOptions): Promise<MaterialPackageRecord[]> {
+export async function getMaterialPackageSquare(
+  query?: Record<string, unknown>,
+  client?: MaterialPackageApiClientOptions,
+): Promise<MaterialPackageRecord[]> {
   const response = await requestMaterialPackageApi<MaterialPackageRecord[]>({
     method: "GET",
     path: "/materialPackage/square",
@@ -344,7 +363,10 @@ export async function getMaterialPackageSquare(query?: Record<string, unknown>, 
   return unwrapOpenApiResultData(response, "获取素材广场失败");
 }
 
-export async function getMaterialPackagesByUser(userId: number, client?: MaterialPackageApiClientOptions) {
+export async function getMaterialPackagesByUser(
+  userId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<any>({
     method: "GET",
     path: `/materialPackage/user/${userId}`,
@@ -367,7 +389,10 @@ export async function importMaterialPackageToSpace(
   return unwrapOpenApiResultData(response, "导入素材包失败");
 }
 
-export async function createSpaceMaterialPackage(payload: CreateSpaceMaterialPackagePayload, client?: MaterialPackageApiClientOptions) {
+export async function createSpaceMaterialPackage(
+  payload: CreateSpaceMaterialPackagePayload,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<SpaceMaterialPackageRecord>({
     method: "POST",
     path: "/space/materialPackage",
@@ -377,7 +402,10 @@ export async function createSpaceMaterialPackage(payload: CreateSpaceMaterialPac
   return unwrapOpenApiResultData(response, "创建局内素材包失败");
 }
 
-export async function updateSpaceMaterialPackage(payload: UpdateSpaceMaterialPackagePayload, client?: MaterialPackageApiClientOptions) {
+export async function updateSpaceMaterialPackage(
+  payload: UpdateSpaceMaterialPackagePayload,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<SpaceMaterialPackageRecord>({
     method: "PUT",
     path: "/space/materialPackage",
@@ -387,8 +415,13 @@ export async function updateSpaceMaterialPackage(payload: UpdateSpaceMaterialPac
   return unwrapOpenApiResultData(response, "更新局内素材包失败");
 }
 
-export async function listSpaceMaterialPackages(spaceId: number, client?: MaterialPackageApiClientOptions) {
-  const response = await requestMaterialPackageApi<SpaceMaterialPackageRecord[]>({
+export async function listSpaceMaterialPackages(
+  spaceId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
+  const response = await requestMaterialPackageApi<
+    SpaceMaterialPackageRecord[]
+  >({
     method: "GET",
     path: "/space/materialPackage/list",
     query: { spaceId },
@@ -397,7 +430,10 @@ export async function listSpaceMaterialPackages(spaceId: number, client?: Materi
   return unwrapOpenApiResultData(response, "获取局内素材包列表失败");
 }
 
-export async function getSpaceMaterialPackage(spacePackageId: number, client?: MaterialPackageApiClientOptions) {
+export async function getSpaceMaterialPackage(
+  spacePackageId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<SpaceMaterialPackageRecord>({
     method: "GET",
     path: `/space/materialPackage/${spacePackageId}`,
@@ -406,7 +442,10 @@ export async function getSpaceMaterialPackage(spacePackageId: number, client?: M
   return unwrapOpenApiResultData(response, "获取局内素材包详情失败");
 }
 
-export async function deleteSpaceMaterialPackage(spacePackageId: number, client?: MaterialPackageApiClientOptions) {
+export async function deleteSpaceMaterialPackage(
+  spacePackageId: number,
+  client?: MaterialPackageApiClientOptions,
+) {
   const response = await requestMaterialPackageApi<Record<string, any>>({
     method: "DELETE",
     path: `/space/materialPackage/${spacePackageId}`,

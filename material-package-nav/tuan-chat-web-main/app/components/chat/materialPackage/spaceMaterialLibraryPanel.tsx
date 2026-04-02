@@ -2230,7 +2230,9 @@ export function SpaceMaterialLibraryCategory({
   ]);
 
   const handleCreate = useCallback(async () => {
-    const name = "新素材箱";
+    const suggestedName = "新素材箱";
+    const baseNames = packages.map((p) => String(p?.name ?? "").trim());
+    const name = autoRenameVsCodeLike(suggestedName, baseNames);
     if (!useBackend) {
       const base = readMockPackages(spaceId);
       const nextId = Math.max(0, ...base.map((p) => p.spacePackageId)) + 1;
@@ -2249,7 +2251,19 @@ export function SpaceMaterialLibraryCategory({
       await queryClient.invalidateQueries({
         queryKey: buildListQueryKey(spaceId, useBackend),
       });
-      toast.success("mock：已创建局内素材箱");
+      ensureExpandedPackage(nextId);
+      setSelectedNode({
+        kind: "package",
+        key: `root:${nextId}`,
+        packageId: nextId,
+      });
+      startInlineRename({
+        kind: "package",
+        key: `root:${nextId}`,
+        spacePackageId: nextId,
+        folderPath: [],
+        name,
+      });
       return;
     }
 
@@ -2263,14 +2277,33 @@ export function SpaceMaterialLibraryCategory({
         coverUrl: "",
         content: buildEmptyMaterialPackageContent(),
       });
-      toast.success("已创建局内素材箱", { id: toastId });
+      toast.dismiss(toastId);
       const createdId = (created as any)?.spacePackageId;
       if (
         typeof createdId === "number" &&
         Number.isFinite(createdId) &&
         createdId > 0
       ) {
+        queryClient.setQueryData(
+          buildListQueryKey(spaceId, useBackend),
+          (prev) => {
+            if (!Array.isArray(prev)) return [created];
+            return [created, ...(prev as SpaceMaterialPackageRecord[])];
+          },
+        );
         ensureExpandedPackage(createdId);
+        setSelectedNode({
+          kind: "package",
+          key: `root:${createdId}`,
+          packageId: createdId,
+        });
+        startInlineRename({
+          kind: "package",
+          key: `root:${createdId}`,
+          spacePackageId: createdId,
+          folderPath: [],
+          name,
+        });
       }
       await queryClient.invalidateQueries({
         queryKey: buildListQueryKey(spaceId, useBackend),
@@ -2279,7 +2312,14 @@ export function SpaceMaterialLibraryCategory({
       const message = error instanceof Error ? error.message : "创建失败";
       toast.error(message, { id: toastId });
     }
-  }, [queryClient, spaceId, useBackend]);
+  }, [
+    ensureExpandedPackage,
+    packages,
+    queryClient,
+    spaceId,
+    startInlineRename,
+    useBackend,
+  ]);
 
   const getSelectedFolderPath = useCallback(() => {
     if (!selectedNode) return [] as string[];
@@ -2294,52 +2334,19 @@ export function SpaceMaterialLibraryCategory({
   }, [selectedNode]);
 
   const handleToolbarNewFile = useCallback(async () => {
-    const targetPackageId = activePackageId;
+    const fallbackId =
+      packages.length === 1 ? Number(packages[0]?.spacePackageId ?? 0) : null;
+    const targetPackageId = isValidId(activePackageId)
+      ? activePackageId
+      : isValidId(fallbackId)
+        ? fallbackId
+        : null;
     if (!isValidId(targetPackageId)) {
-      window.alert("请先展开或选中一个局内素材箱。");
-      return;
-    }
-
-    const baseContent = await loadPackageContent(targetPackageId);
-    const nodes = getFolderNodesAtPath(baseContent, []);
-    const usedNames = nodes.map((n) => n.name);
-
-    const name = window.prompt("新建文件名（可带任意后缀）", "新文件.txt");
-    const trimmed = (name ?? "").trim();
-    if (!trimmed) return;
-    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
-    if (finalName !== trimmed) {
-      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
-    }
-
-    const material: MaterialItemNode = {
-      type: "material",
-      name: finalName,
-      note: "",
-      messages: [],
-    };
-    const nextContent = draftCreateMaterial(baseContent, [], material);
-    await savePackageContent(targetPackageId, nextContent);
-
-    const nodeKey = `material:${targetPackageId}:material:${finalName}`;
-    setSelectedNode({
-      kind: "material",
-      key: nodeKey,
-      packageId: targetPackageId,
-    });
-    ensureExpandedPackage(targetPackageId);
-    toast.success("已新建文件");
-    setTimeout(() => {
-      document
-        .querySelector(`[data-node-key="${nodeKey}"]`)
-        ?.scrollIntoView({ block: "nearest" });
-    }, 0);
-  }, [activePackageId, loadPackageContent, savePackageContent]);
-
-  const handleToolbarNewFolder = useCallback(async () => {
-    const targetPackageId = activePackageId;
-    if (!isValidId(targetPackageId)) {
-      window.alert("请先展开或选中一个局内素材箱。");
+      toast.error(
+        packages.length
+          ? "请先展开或选中一个局内素材箱。"
+          : "请先创建一个局内素材箱。",
+      );
       return;
     }
 
@@ -2350,14 +2357,90 @@ export function SpaceMaterialLibraryCategory({
         : [];
     const nodes = getFolderNodesAtPath(baseContent, folderPath);
     const usedNames = nodes.map((n) => n.name);
+    const finalName = autoRenameVsCodeLike("新文件.txt", usedNames);
 
-    const name = window.prompt("新建文件夹名称", "新建文件夹");
-    const trimmed = (name ?? "").trim();
-    if (!trimmed) return;
-    const finalName = autoRenameVsCodeLike(trimmed, usedNames);
-    if (finalName !== trimmed) {
-      window.alert(`名称已存在，已自动重命名为「${finalName}」。`);
+    const material: MaterialItemNode = {
+      type: "material",
+      name: finalName,
+      note: "",
+      messages: [],
+    };
+    const nextContent = draftCreateMaterial(baseContent, folderPath, material);
+    await savePackageContent(targetPackageId, nextContent);
+
+    const tokens = [
+      ...folderPath.map(makeFolderToken),
+      makeMaterialToken(finalName),
+    ];
+    const nodeKey = `material:${targetPackageId}:${tokens.join("/")}`;
+    setSelectedNode({
+      kind: "material",
+      key: nodeKey,
+      packageId: targetPackageId,
+    });
+    ensureExpandedPackage(targetPackageId);
+    setCollapsedFolderByKey((prev) => {
+      if (!folderPath.length) return prev;
+      let changed = false;
+      const next: Record<string, boolean> = { ...prev };
+      const folderTokens = folderPath.map(makeFolderToken);
+      for (let i = 0; i < folderTokens.length; i += 1) {
+        const k = `folder:${targetPackageId}:${folderTokens.slice(0, i + 1).join("/")}`;
+        if (next[k] === true) {
+          next[k] = false;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    startInlineRename({
+      kind: "material",
+      key: nodeKey,
+      spacePackageId: targetPackageId,
+      folderPath,
+      name: finalName,
+    });
+    setTimeout(() => {
+      document
+        .querySelector(`[data-node-key="${nodeKey}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    }, 0);
+  }, [
+    activePackageId,
+    getSelectedFolderPath,
+    loadPackageContent,
+    packages,
+    savePackageContent,
+    selectedNode,
+    setCollapsedFolderByKey,
+    startInlineRename,
+  ]);
+
+  const handleToolbarNewFolder = useCallback(async () => {
+    const fallbackId =
+      packages.length === 1 ? Number(packages[0]?.spacePackageId ?? 0) : null;
+    const targetPackageId = isValidId(activePackageId)
+      ? activePackageId
+      : isValidId(fallbackId)
+        ? fallbackId
+        : null;
+    if (!isValidId(targetPackageId)) {
+      toast.error(
+        packages.length
+          ? "请先展开或选中一个局内素材箱。"
+          : "请先创建一个局内素材箱。",
+      );
+      return;
     }
+
+    const baseContent = await loadPackageContent(targetPackageId);
+    const folderPath =
+      selectedNode && Number(selectedNode.packageId) === Number(targetPackageId)
+        ? getSelectedFolderPath()
+        : [];
+    const nodes = getFolderNodesAtPath(baseContent, folderPath);
+    const usedNames = nodes.map((n) => n.name);
+    const finalName = autoRenameVsCodeLike("新建文件夹", usedNames);
 
     const nextContent = draftCreateFolder(baseContent, folderPath, finalName);
     await savePackageContent(targetPackageId, nextContent);
@@ -2385,7 +2468,13 @@ export function SpaceMaterialLibraryCategory({
       }
       return changed ? next : prev;
     });
-    toast.success("已新建文件夹");
+    startInlineRename({
+      kind: "folder",
+      key: nodeKey,
+      spacePackageId: targetPackageId,
+      folderPath: [...folderPath, finalName],
+      name: finalName,
+    });
     setTimeout(() => {
       document
         .querySelector(`[data-node-key="${nodeKey}"]`)
@@ -2395,9 +2484,11 @@ export function SpaceMaterialLibraryCategory({
     activePackageId,
     getSelectedFolderPath,
     loadPackageContent,
+    packages,
     savePackageContent,
     selectedNode,
     setCollapsedFolderByKey,
+    startInlineRename,
   ]);
 
   const handleToolbarDelete = useCallback(() => {
@@ -2648,7 +2739,6 @@ export function SpaceMaterialLibraryCategory({
         setSelectedNode((prev) =>
           prev && Number(prev.packageId) === packageId ? null : prev,
         );
-        toast.success("mock：已删除");
         return;
       }
 
@@ -2656,7 +2746,7 @@ export function SpaceMaterialLibraryCategory({
       toast.loading("正在删除…", { id: toastId });
       try {
         await deleteSpaceMaterialPackage(packageId);
-        toast.success("已删除", { id: toastId });
+        toast.dismiss(toastId);
         await queryClient.invalidateQueries({
           queryKey: buildListQueryKey(spaceId, useBackend),
         });
@@ -2682,7 +2772,6 @@ export function SpaceMaterialLibraryCategory({
       await savePackageContent(packageId, nextContent);
       clearMaterialSelection();
       setSelectedNode({ kind: "package", key: `root:${packageId}`, packageId });
-      toast.success("已删除");
     } catch (error) {
       const message = error instanceof Error ? error.message : "删除失败";
       toast.error(message);
@@ -3629,7 +3718,7 @@ export function SpaceMaterialLibraryCategory({
                   <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    disabled={!isValidId(activePackageId)}
+                    disabled={packages.length === 0}
                     onClick={() => {
                       void handleToolbarNewFile();
                     }}
@@ -3642,7 +3731,7 @@ export function SpaceMaterialLibraryCategory({
                   <button
                     type="button"
                     className="btn btn-ghost btn-xs btn-square"
-                    disabled={!isValidId(activePackageId)}
+                    disabled={packages.length === 0}
                     onClick={() => {
                       void handleToolbarNewFolder();
                     }}

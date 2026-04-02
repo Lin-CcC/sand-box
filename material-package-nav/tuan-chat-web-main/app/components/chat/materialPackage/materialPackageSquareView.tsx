@@ -1,7 +1,7 @@
 import type { MaterialPackageRecord } from "@/components/materialPackage/materialPackageApi";
 
 import { PackageIcon, X } from "@phosphor-icons/react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 
@@ -71,6 +71,7 @@ export default function MaterialPackageSquareView({
   forcedImportSpaceId,
   onImportedToSpace,
 }: MaterialPackageSquareViewProps) {
+  const queryClient = useQueryClient();
   const screenSize = useScreenSize();
   const isMobile = screenSize === "sm";
 
@@ -257,6 +258,12 @@ export default function MaterialPackageSquareView({
         await importMaterialPackageToSpace(args.packageId, {
           spaceId: args.spaceId,
         });
+        await queryClient.invalidateQueries({
+          queryKey: buildMaterialPackageSquareQueryKey(true),
+        });
+        await queryClient.invalidateQueries({
+          queryKey: buildMaterialPackageDetailQueryKey(args.packageId, true),
+        });
         toast.success("已导入到当前局内（Space）。");
         onImportedToSpace?.({
           spaceId: args.spaceId,
@@ -270,7 +277,7 @@ export default function MaterialPackageSquareView({
         setIsImporting(false);
       }
     },
-    [closePickSpace, onImportedToSpace, useBackend],
+    [closePickSpace, onImportedToSpace, queryClient, useBackend],
   );
 
   const handleImport = useCallback(async () => {

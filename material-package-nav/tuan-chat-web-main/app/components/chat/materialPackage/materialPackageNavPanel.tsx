@@ -41,6 +41,7 @@ import {
 } from "@/components/chat/materialPackage/materialPackageMockStore";
 import MaterialPreviewFloat from "@/components/chat/materialPackage/materialPreviewFloat";
 import PortalTooltip from "@/components/common/portalTooltip";
+import { UploadUtils } from "@/utils/UploadUtils";
 import { ChevronDown, FolderIcon, SidebarSimpleIcon } from "@/icons";
 import { useLocalStorage } from "@/components/common/customHooks/useLocalStorage";
 import {
@@ -329,6 +330,7 @@ export default function MaterialPackageNavPanel({
     [],
   );
   const queryClient = useQueryClient();
+  const uploadUtils = useRef(new UploadUtils()).current;
   const listQueryKey = buildMaterialPackageMyQueryKey(useBackend);
   const squareQueryKey = buildMaterialPackageSquareQueryKey(useBackend);
 
@@ -552,6 +554,22 @@ export default function MaterialPackageNavPanel({
   const visibilityPopoverRef = useRef<HTMLDivElement | null>(null);
   const visibilityFirstInputRef = useRef<HTMLInputElement | null>(null);
   const [visibilityPos, setVisibilityPos] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+
+  const [packageMetaEditor, setPackageMetaEditor] = useState<{
+    packageId: number;
+    draftDescription: string;
+    draftCoverUrl: string;
+    saving: boolean;
+    uploadingCover: boolean;
+    anchor: HTMLButtonElement | null;
+  } | null>(null);
+  const packageMetaPopoverRef = useRef<HTMLDivElement | null>(null);
+  const packageMetaFirstInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const packageMetaCoverInputRef = useRef<HTMLInputElement | null>(null);
+  const [packageMetaPos, setPackageMetaPos] = useState<{
     left: number;
     top: number;
   } | null>(null);
@@ -981,10 +999,39 @@ export default function MaterialPackageNavPanel({
     setVisibilityPos(null);
   }, []);
 
+  const closePackageMetaEditor = useCallback(() => {
+    setPackageMetaEditor((prev) => {
+      if (!prev) return prev;
+      try {
+        prev.anchor?.focus?.();
+      } catch {
+        // ignore focus errors
+      }
+      return null;
+    });
+    setPackageMetaPos(null);
+  }, []);
+
   const computeVisibilityPos = useCallback((anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     const width = 320;
     const height = 188;
+    const padding = 8;
+    const panelRect = scrollRef.current?.getBoundingClientRect() ?? null;
+
+    return computeVisibilityPopoverPos({
+      anchorRect: rect,
+      panelRect,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      popover: { width, height },
+      padding,
+    });
+  }, []);
+
+  const computePackageMetaPos = useCallback((anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    const width = 420;
+    const height = 284;
     const padding = 8;
     const panelRect = scrollRef.current?.getBoundingClientRect() ?? null;
 
@@ -1014,10 +1061,66 @@ export default function MaterialPackageNavPanel({
     [computeVisibilityPos],
   );
 
+  const openPackageMetaEditor = useCallback(
+    (args: { packageId: number; anchor: HTMLButtonElement }) => {
+      const pkg = findPackageById(Number(args.packageId));
+      const description = String(pkg?.description ?? "");
+      const coverUrl = String(pkg?.coverUrl ?? "");
+      setPackageMetaEditor({
+        packageId: Number(args.packageId),
+        draftDescription: description,
+        draftCoverUrl: coverUrl,
+        saving: false,
+        uploadingCover: false,
+        anchor: args.anchor,
+      });
+      setPackageMetaPos(computePackageMetaPos(args.anchor));
+    },
+    [computePackageMetaPos, findPackageById],
+  );
+
+  const uploadPackageCover = useCallback(
+    async (file: File) => {
+      if (!file || !file.type.startsWith("image/")) {
+        toast.error("请选择图片文件");
+        return;
+      }
+
+      setPackageMetaEditor((prev) =>
+        prev ? { ...prev, uploadingCover: true } : prev,
+      );
+      const toastId = toast.loading("正在上传封面…");
+
+      try {
+        const url = await uploadUtils.uploadImg(file, 4);
+        setPackageMetaEditor((prev) =>
+          prev ? { ...prev, draftCoverUrl: url } : prev,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "上传失败";
+        toast.dismiss(toastId);
+        toast.error(message);
+      } finally {
+        toast.dismiss(toastId);
+        setPackageMetaEditor((prev) =>
+          prev ? { ...prev, uploadingCover: false } : prev,
+        );
+        const input = packageMetaCoverInputRef.current;
+        if (input) input.value = "";
+      }
+    },
+    [uploadUtils],
+  );
+
   useEffect(() => {
     if (!visibilityEditor?.anchor) return;
     setVisibilityPos(computeVisibilityPos(visibilityEditor.anchor));
   }, [computeVisibilityPos, visibilityEditor?.anchor]);
+
+  useEffect(() => {
+    if (!packageMetaEditor?.anchor) return;
+    setPackageMetaPos(computePackageMetaPos(packageMetaEditor.anchor));
+  }, [computePackageMetaPos, packageMetaEditor?.anchor]);
 
   useEffect(() => {
     if (!visibilityEditor) return;
@@ -1051,6 +1154,37 @@ export default function MaterialPackageNavPanel({
   }, [closeVisibilityEditor, visibilityEditor]);
 
   useEffect(() => {
+    if (!packageMetaEditor) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closePackageMetaEditor();
+      }
+    };
+
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      const pop = packageMetaPopoverRef.current;
+      if (pop && pop.contains(target)) return;
+      if (
+        packageMetaEditor.anchor &&
+        packageMetaEditor.anchor.contains(target as Node)
+      )
+        return;
+      closePackageMetaEditor();
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onPointerDown, true);
+    };
+  }, [closePackageMetaEditor, packageMetaEditor]);
+
+  useEffect(() => {
     if (!visibilityEditor) return;
     const t = window.setTimeout(() => {
       try {
@@ -1061,6 +1195,79 @@ export default function MaterialPackageNavPanel({
     }, 0);
     return () => window.clearTimeout(t);
   }, [visibilityEditor]);
+
+  useEffect(() => {
+    if (!packageMetaEditor) return;
+    const t = window.setTimeout(() => {
+      try {
+        packageMetaFirstInputRef.current?.focus?.();
+      } catch {
+        // ignore focus errors
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [packageMetaEditor]);
+
+  const savePackageMeta = useCallback(
+    async (args: {
+      packageId: number;
+      description: string;
+      coverUrl: string;
+    }) => {
+      const packageId = Number(args.packageId);
+      const nextDescription = String(args.description ?? "").trim();
+      const nextCoverUrl = String(args.coverUrl ?? "").trim();
+      const detailKey = buildMaterialPackageDetailQueryKey(
+        packageId,
+        useBackend,
+      );
+
+      if (useBackend) {
+        const updated = await updateMaterialPackage({
+          packageId,
+          description: nextDescription,
+          coverUrl: nextCoverUrl || null,
+        });
+        queryClient.setQueryData(detailKey, updated);
+        queryClient.setQueryData(listQueryKey, (prev) => {
+          if (!Array.isArray(prev)) return prev;
+          const list = prev as MaterialPackageRecord[];
+          return list.map((p) =>
+            Number(p.packageId) === packageId ? updated : p,
+          );
+        });
+        queryClient.setQueryData(squareQueryKey, (prev) =>
+          applyVisibilityToSquare(Array.isArray(prev) ? prev : [], updated),
+        );
+        return updated;
+      }
+
+      const baseList = Array.isArray(queryClient.getQueryData(listQueryKey))
+        ? (queryClient.getQueryData(listQueryKey) as MaterialPackageRecord[])
+        : readMockPackages();
+      const base =
+        baseList.find((p) => Number(p.packageId) === packageId) ?? null;
+      if (!base) return null;
+      const now = new Date().toISOString();
+      const nextRecord: MaterialPackageRecord = {
+        ...base,
+        description: nextDescription,
+        coverUrl: nextCoverUrl || null,
+        updateTime: now,
+      };
+      const nextList = baseList.map((p) =>
+        Number(p.packageId) === packageId ? nextRecord : p,
+      );
+      writeMockPackages(nextList);
+      queryClient.setQueryData(listQueryKey, nextList);
+      queryClient.setQueryData(detailKey, nextRecord);
+      queryClient.setQueryData(squareQueryKey, (prev) =>
+        applyVisibilityToSquare(Array.isArray(prev) ? prev : [], nextRecord),
+      );
+      return nextRecord;
+    },
+    [listQueryKey, queryClient, squareQueryKey, useBackend],
+  );
 
   const savePackageVisibility = useCallback(
     async (args: { packageId: number; visibility: 0 | 1 }) => {
@@ -2899,7 +3106,8 @@ export default function MaterialPackageNavPanel({
             data-base-index={item.baseIndex}
           >
             <div
-              className={`flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
+              className={`group flex items-center gap-1 py-1 pr-1 text-xs font-medium opacity-90 select-none rounded-md ${isSelected ? "bg-base-300/60 ring-1 ring-info/20" : "hover:bg-base-300/40"} ${isReorderDropTarget && reorderPlacement === "before" ? "relative before:absolute before:left-2 before:right-2 before:top-0 before:h-[2px] before:bg-info before:rounded" : ""} ${isReorderDropTarget && reorderPlacement === "after" ? "relative after:absolute after:left-2 after:right-2 after:bottom-0 after:h-[2px] after:bg-info after:rounded" : ""}`}
+              data-node-key={item.key}
               draggable
               onDragStart={(e) => {
                 markClickSuppressed(suppressPackageClickUntilMsRef, Date.now());
@@ -3044,7 +3252,6 @@ export default function MaterialPackageNavPanel({
                   openPreview(item.payload, null);
                 });
               }}
-              data-node-key={item.key}
             >
               <button
                 type="button"
@@ -3135,6 +3342,22 @@ export default function MaterialPackageNavPanel({
                 aria-label={`可见性：${visibilityCopy.chip}，点击修改`}
               >
                 {visibilityCopy.chip}
+              </button>
+              <button
+                type="button"
+                className="shrink-0 inline-flex items-center rounded-sm border border-base-300 px-2 py-[1px] text-[11px] opacity-0 group-hover:opacity-100 hover:bg-base-300/40"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  openPackageMetaEditor({
+                    packageId,
+                    anchor: e.currentTarget,
+                  });
+                }}
+                aria-label="编辑素材包信息"
+                title="编辑简介与封面"
+              >
+                信息
               </button>
             </div>
           </div>
@@ -4159,6 +4382,174 @@ export default function MaterialPackageNavPanel({
                 }}
               >
                 {visibilityEditor.saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {packageMetaEditor &&
+        packageMetaPos &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={packageMetaPopoverRef}
+            className="z-[9999] w-[420px] overflow-hidden rounded-md border border-base-300 bg-base-100 text-base-content shadow-xl"
+            style={{
+              position: "fixed",
+              left: packageMetaPos.left,
+              top: packageMetaPos.top,
+            }}
+            role="dialog"
+            aria-label="素材包信息设置"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-base-300 px-3 py-2">
+              <div className="text-[13px] font-semibold">素材包信息</div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs btn-square"
+                aria-label="关闭"
+                onClick={() => closePackageMetaEditor()}
+                disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="px-3 py-3 space-y-3">
+              <div
+                className="text-xs opacity-70 truncate"
+                title={findPackageById(packageMetaEditor.packageId)?.name ?? ""}
+              >
+                {findPackageById(packageMetaEditor.packageId)?.name ??
+                  `素材包#${packageMetaEditor.packageId}`}
+              </div>
+
+              <label className="block">
+                <div className="text-xs opacity-70">简介 / 描述</div>
+                <textarea
+                  ref={packageMetaFirstInputRef}
+                  className="textarea textarea-bordered textarea-sm w-full mt-1"
+                  rows={4}
+                  value={packageMetaEditor.draftDescription}
+                  onChange={(e) =>
+                    setPackageMetaEditor((prev) =>
+                      prev
+                        ? { ...prev, draftDescription: e.target.value }
+                        : prev,
+                    )
+                  }
+                  disabled={packageMetaEditor.saving}
+                />
+              </label>
+
+              <label className="block">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs opacity-70">封面（可留空）</div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={packageMetaCoverInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          void uploadPackageCover(file);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      disabled={
+                        packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                      }
+                      onClick={() => packageMetaCoverInputRef.current?.click()}
+                    >
+                      {packageMetaEditor.uploadingCover ? "上传中…" : "上传图片"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      disabled={
+                        packageMetaEditor.saving || packageMetaEditor.uploadingCover
+                      }
+                      onClick={() =>
+                        setPackageMetaEditor((prev) =>
+                          prev ? { ...prev, draftCoverUrl: "" } : prev,
+                        )
+                      }
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+                <input
+                  className="input input-bordered input-sm w-full mt-1"
+                  placeholder="https://..."
+                  value={packageMetaEditor.draftCoverUrl}
+                  onChange={(e) =>
+                    setPackageMetaEditor((prev) =>
+                      prev ? { ...prev, draftCoverUrl: e.target.value } : prev,
+                    )
+                  }
+                  disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+                />
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-base-300 px-3 py-2">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => closePackageMetaEditor()}
+                disabled={packageMetaEditor.saving || packageMetaEditor.uploadingCover}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={
+                  packageMetaEditor.saving ||
+                  packageMetaEditor.uploadingCover ||
+                  (() => {
+                    const pkg = findPackageById(packageMetaEditor.packageId);
+                    const curDesc = String(pkg?.description ?? "").trim();
+                    const curCover = String(pkg?.coverUrl ?? "").trim();
+                    const nextDesc = String(
+                      packageMetaEditor.draftDescription ?? "",
+                    ).trim();
+                    const nextCover = String(
+                      packageMetaEditor.draftCoverUrl ?? "",
+                    ).trim();
+                    return curDesc === nextDesc && curCover === nextCover;
+                  })()
+                }
+                onClick={async () => {
+                  if (!packageMetaEditor || packageMetaEditor.saving) return;
+                  setPackageMetaEditor((prev) =>
+                    prev ? { ...prev, saving: true } : prev,
+                  );
+                  try {
+                    await savePackageMeta({
+                      packageId: packageMetaEditor.packageId,
+                      description: packageMetaEditor.draftDescription,
+                      coverUrl: packageMetaEditor.draftCoverUrl,
+                    });
+                    closePackageMetaEditor();
+                  } catch (error) {
+                    setPackageMetaEditor((prev) =>
+                      prev ? { ...prev, saving: false } : prev,
+                    );
+                    const message =
+                      error instanceof Error ? error.message : "保存失败";
+                    window.alert(message);
+                  }
+                }}
+              >
+                {packageMetaEditor.saving ? "保存中…" : "保存"}
               </button>
             </div>
           </div>,
